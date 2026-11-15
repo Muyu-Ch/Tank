@@ -1,5 +1,8 @@
 import pygame
 import random
+import math
+Pi=3.1415926
+BLACK=(0,0,0)
 
 SCREAN_WIDTH=800
 
@@ -19,19 +22,28 @@ class Field:
 
 class Tank:
     def __init__(self):
-        self.x=0
-        self.y=0
-        self.color='black'
-        self.angle=0
-
-    def draw(self):
-        return 
-        
+        self.x=200
+        self.y=200
+        self.color=BLACK
+        self.angle=10
+        self.size=50
+    
+    def draw(self,screen):
+        points=[] 
+        for i in (Pi/6,5*Pi/6,-5*Pi/6,-Pi/6):
+            point=(
+                self.x+self.size*(math.cos(i+Pi*self.angle/180)),
+                self.y+self.size*(math.sin(i+Pi*self.angle/180))
+            ) 
+            points.append(point)
+        pygame.draw.polygon(screen,self.color,points,0)
+                
 field=Field()
+tank=Tank()
 pygame.init()
 screen = pygame.display.set_mode((SCREAN_LENGTH,SCREAN_WIDTH))
 field.draw_field(screen)
-
+tank.draw(screen)
 isRunning = True 
 
 while isRunning:
