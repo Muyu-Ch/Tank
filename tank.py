@@ -4,6 +4,8 @@ import math
 Pi=3.1415926
 BLACK=(0,0,0)
 
+BULLET_COLOR=(100,100,100)
+
 SCREAN_WIDTH=800
 
 SCREAN_LENGTH=1000
@@ -56,13 +58,23 @@ class Tank:
             self.y+self.size*(1.5*math.sin(Pi*self.angle/180) - 0.2*math.cos(Pi*self.angle/180))
         ))       
         pygame.draw.polygon(screen,self.color,fire_points,0)
-                
+
+class Bullet:
+    def __init__(self):
+        self.x=300
+        self.y=300
+        self.size=10.0
+    def draw(self,screen):
+        pygame.draw.circle(screen,BULLET_COLOR,(self.x,self.y),self.size,0)
+
 field=Field()
 tank=Tank()
+bullet=Bullet()
 pygame.init()
 screen = pygame.display.set_mode((SCREAN_LENGTH,SCREAN_WIDTH))
 field.draw_field(screen)
 tank.draw(screen)
+bullet.draw(screen)
 isRunning = True 
 
 while isRunning:
