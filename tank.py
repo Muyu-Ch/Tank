@@ -30,10 +30,10 @@ class Tank:
     
     def draw(self,screen):
         points=[] 
-        for i in (Pi/6,5*Pi/6,-5*Pi/6,-Pi/6):
+        for i in (35,145,-145,-35):
             point=(
-                self.x+self.size*(math.cos(i+Pi*self.angle/180)),
-                self.y+self.size*(math.sin(i+Pi*self.angle/180))
+                self.x+self.size*math.cos(Pi*(i+self.angle)/180),
+                self.y+self.size*math.sin(Pi*(i+self.angle)/180)
             ) 
             points.append(point)
         pygame.draw.polygon(screen,self.color,points,0)
