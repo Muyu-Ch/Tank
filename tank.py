@@ -16,7 +16,7 @@ class Field:
         self.length=800
         self.field_color=(255,255,255)
 
-    def draw_field(self,screen):
+    def dfaw_field(self,screen):
         screen.fill(self.field_color)
 
     def draw_tanks(self,tanks):
