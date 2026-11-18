@@ -6,6 +6,12 @@ Pi=3.1415926
 
 BLACK=(0,0,0)
 
+RED=(255,0,0)
+
+GREEN=(0,255,0)
+
+BLUE=(0,0,255)
+
 BULLET_COLOR=(100,100,100)
 
 SCREAN_WIDTH=800
@@ -26,10 +32,10 @@ class Field:
             t.draw(screen)
 
 class Tank:
-    def __init__(self):
+    def __init__(self,color):
         self.x=200
         self.y=200
-        self.color=BLACK
+        self.color=color
         self.angle=0
         self.size=30
         self.speed=100 
@@ -87,8 +93,8 @@ class Bullet:
         pygame.draw.circle(screen,BULLET_COLOR,(self.x,self.y),self.size,0)
 
 field=Field()
-tank1=Tank()
-tank2=Tank()
+tank1=Tank(GREEN)
+tank2=Tank(BLUE)
 tanks=[tank1,tank2]
 
 pygame.init()
