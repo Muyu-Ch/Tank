@@ -1,7 +1,9 @@
 import pygame
 import random
 import math
+import time
 Pi=3.1415926
+
 BLACK=(0,0,0)
 
 BULLET_COLOR=(100,100,100)
@@ -28,10 +30,10 @@ class Tank:
         self.x=200
         self.y=200
         self.color=BLACK
-        self.angle=10
-        self.size=10
-        self.speed=10 
-        self.angle_speed=90
+        self.angle=0
+        self.size=30
+        self.speed=100 
+        self.angle_speed=180
 
     def draw(self,screen):
         body_points=[] 
@@ -62,19 +64,19 @@ class Tank:
         ))       
         pygame.draw.polygon(screen,self.color,fire_points,0)
 
-        def forward(self,fps):
-            self.x+=self.speed*math.cos(self.angle)/fps
-            self.y+=self.speed*math.sin(self.angle)/fps
+    def forward(self,fps):
+        self.x+=self.speed*math.cos(Pi*self.angle/180)/fps
+        self.y+=self.speed*math.sin(Pi*self.angle/180)/fps
 
-        def back(self):
-            self.x-=self.speed*math.cos(self.angle)/fps
-            self.y-=self.speed*math.sin(self.angle)/fps
+    def back(self,fps):
+        self.x+=self.speed*math.cos(Pi*self.angle/180)/fps
+        self.y+=self.speed*math.sin(Pi*self.angle/180)/fps
 
-        def turn_left(self):
-            self.angle-=self.angle_speed/fps
+    def turn_left(self,fps):
+        self.angle-=self.angle_speed/fps
 
-        def turn_right(self):
-            self.angle+=self.angle_speed/fps
+    def turn_right(self,fps):
+        self.angle+=self.angle_speed/fps
 
 class Bullet:
     def __init__(self):
@@ -84,11 +86,6 @@ class Bullet:
     def draw(self,screen):
         pygame.draw.circle(screen,BULLET_COLOR,(self.x,self.y),self.size,0)
 
-def move(self,tank1,tank2):
-    keys.pygame.key.getpressed()
-    if keys[pygame.K.w]:
-        pass
-
 field=Field()
 tank1=Tank()
 tank2=Tank()
@@ -96,15 +93,36 @@ tanks=[tank1,tank2]
 
 pygame.init()
 screen = pygame.display.set_mode((SCREAN_LENGTH,SCREAN_WIDTH))
-field.draw_field(screen)
-field.draw_tanks(screen,tanks)
+fps=60.0
 isRunning = True 
 
 while isRunning:
+    field.draw_field(screen)
+    field.draw_tanks(screen,tanks)
+
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             isRunning=False
-        
+        keys=pygame.key.get_pressed()
+        if keys[pygame.K_w]:
+            tank1.forward(fps)
+        if keys[pygame.K_s]:
+            tank1.back(fps)
+        if keys[pygame.K_a]:
+            tank1.turn_left(fps)
+        if keys[pygame.K_d]:
+            tank1.turn_right(fps)
+
+        if keys[pygame.K_UP]:
+            tank2.forward(fps)
+        if keys[pygame.K_DOWN]:
+            tank2.back(fps)
+        if keys[pygame.K_LEFT]:
+            tank2.turn_left(fps)
+        if keys[pygame.K_RIGHT]:
+            tank2.turn_right(fps)
+
     pygame.display.flip()
+    time.sleep(1/fps)
 
 
