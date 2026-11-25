@@ -1,134 +1,413 @@
-import pygame
-import random
+"""Tank Trouble inspired local Pygame game. Run with: python3 tank.py"""
+from __future__ import annotations
+
 import math
-import time
-Pi=3.1415926
+import random
+from collections import deque
+from dataclasses import dataclass
+from pathlib import Path
 
-BLACK=(0,0,0)
+import pygame
 
-RED=(255,0,0)
+WIDTH, HEIGHT = 1120, 760
+CELL, COLS, ROWS = 88, 12, 7
+OX, OY = 32, 112
+FIELD_W, FIELD_H = CELL * COLS, CELL * ROWS
+FPS = 60
+WALL = 10
+BG = (18, 23, 35)
+FLOOR = (30, 39, 57)
+GRID = (38, 48, 67)
+WALL_COLOR = (128, 149, 178)
+WHITE = (238, 244, 251)
+MUTED = (143, 159, 183)
+YELLOW = (255, 194, 73)
+BLUE = (71, 185, 255)
 
-GREEN=(0,255,0)
 
-BLUE=(0,0,255)
+def cell_center(cell):
+    col, row = cell
+    return pygame.Vector2(OX + (col + .5) * CELL, OY + (row + .5) * CELL)
 
-BULLET_COLOR=(100,100,100)
 
-SCREAN_WIDTH=800
+def unit(angle):
+    return pygame.Vector2(math.cos(angle), math.sin(angle))
 
-SCREAN_LENGTH=1000
 
-class Field:
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+class Maze:
     def __init__(self):
-        self.width=600
-        self.length=800
-        self.field_color=(255,255,255)
+        self.openings = {(x, y): set() for y in range(ROWS) for x in range(COLS)}
+        seen = {(0, 0)}
+        stack = [(0, 0)]
+        while stack:
+            x, y = stack[-1]
+            choices = []
+            for dx, dy, name, reverse in ((1, 0, 'E', 'W'), (-1, 0, 'W', 'E'),
+                                          (0, 1, 'S', 'N'), (0, -1, 'N', 'S')):
+                nxt = (x + dx, y + dy)
+                if 0 <= nxt[0] < COLS and 0 <= nxt[1] < ROWS and nxt not in seen:
+                    choices.append((nxt, name, reverse))
+            if not choices:
+                stack.pop()
+                continue
+            nxt, name, reverse = random.choice(choices)
+            self.openings[(x, y)].add(name)
+            self.openings[nxt].add(reverse)
+            seen.add(nxt)
+            stack.append(nxt)
+        # Add loops so players have multiple routes through the arena.
+        for _ in range(20):
+            x, y = random.randrange(COLS), random.randrange(ROWS)
+            directions = []
+            if x + 1 < COLS:
+                directions.append(((x + 1, y), 'E', 'W'))
+            if y + 1 < ROWS:
+                directions.append(((x, y + 1), 'S', 'N'))
+            if directions:
+                nxt, name, reverse = random.choice(directions)
+                self.openings[(x, y)].add(name)
+                self.openings[nxt].add(reverse)
+        self.walls = []
+        for y in range(ROWS):
+            for x in range(COLS):
+                px, py = OX + x * CELL, OY + y * CELL
+                if 'E' not in self.openings[(x, y)]:
+                    self.walls.append(pygame.Rect(px + CELL - WALL // 2, py - WALL // 2,
+                                                  WALL, CELL + WALL))
+                if 'S' not in self.openings[(x, y)]:
+                    self.walls.append(pygame.Rect(px - WALL // 2, py + CELL - WALL // 2,
+                                                  CELL + WALL, WALL))
+        self.walls += [
+            pygame.Rect(OX - WALL, OY - WALL, FIELD_W + 2 * WALL, WALL),
+            pygame.Rect(OX - WALL, OY + FIELD_H, FIELD_W + 2 * WALL, WALL),
+            pygame.Rect(OX - WALL, OY, WALL, FIELD_H),
+            pygame.Rect(OX + FIELD_W, OY, WALL, FIELD_H),
+        ]
 
-    def draw_field(self,screen):
-        screen.fill(self.field_color)
+    def route(self, start, goal):
+        if start == goal:
+            return [start]
+        queue = deque([start])
+        parent = {start: None}
+        offsets = {'E': (1, 0), 'W': (-1, 0), 'S': (0, 1), 'N': (0, -1)}
+        while queue:
+            here = queue.popleft()
+            for direction in self.openings[here]:
+                dx, dy = offsets[direction]
+                nxt = (here[0] + dx, here[1] + dy)
+                if nxt not in parent:
+                    parent[nxt] = here
+                    if nxt == goal:
+                        path = [goal]
+                        while path[-1] != start:
+                            path.append(parent[path[-1]])
+                        return path[::-1]
+                    queue.append(nxt)
+        return [start]
 
-    def draw_tanks(self,screen,tanks):
-        for t in tanks:
-            t.draw(screen)
+    def draw(self, screen):
+        pygame.draw.rect(screen, FLOOR, (OX, OY, FIELD_W, FIELD_H))
+        for x in range(COLS + 1):
+            pygame.draw.line(screen, GRID, (OX + x * CELL, OY), (OX + x * CELL, OY + FIELD_H))
+        for y in range(ROWS + 1):
+            pygame.draw.line(screen, GRID, (OX, OY + y * CELL), (OX + FIELD_W, OY + y * CELL))
+        for rect in self.walls:
+            pygame.draw.rect(screen, (59, 75, 102), rect.move(2, 3), border_radius=3)
+            pygame.draw.rect(screen, WALL_COLOR, rect, border_radius=3)
 
+
+def hits_wall(pos, radius, walls):
+    for rect in walls:
+        nearest_x = clamp(pos.x, rect.left, rect.right)
+        nearest_y = clamp(pos.y, rect.top, rect.bottom)
+        if (pos.x - nearest_x) ** 2 + (pos.y - nearest_y) ** 2 < radius ** 2:
+            return True
+    return False
+
+
+def grid_cell(pos):
+    return (clamp(int((pos.x - OX) / CELL), 0, COLS - 1),
+            clamp(int((pos.y - OY) / CELL), 0, ROWS - 1))
+
+
+@dataclass
 class Tank:
-    def __init__(self,color):
-        self.x=200
-        self.y=200
-        self.color=color
-        self.angle=0
-        self.size=30
-        self.speed=100 
-        self.angle_speed=180
+    pos: pygame.Vector2
+    angle: float
+    color: tuple
+    name: str
+    score: int = 0
+    cooldown: float = 0
+    alive: bool = True
 
-    def draw(self,screen):
-        body_points=[] 
-        for i in (35,145,-145,-35):
-            point=(
-                self.x+self.size*math.cos(Pi*(i+self.angle)/180),
-                self.y+self.size*math.sin(Pi*(i+self.angle)/180)
-            ) 
-            body_points.append(point)
-        pygame.draw.polygon(screen,self.color,body_points,0)
+    def update(self, dt, forward, turn, walls):
+        if not self.alive:
+            return
+        self.angle += turn * 2.85 * dt
+        velocity = unit(self.angle) * forward * 185 * dt
+        for axis in ('x', 'y'):
+            candidate = self.pos.copy()
+            setattr(candidate, axis, getattr(candidate, axis) + getattr(velocity, axis))
+            if not hits_wall(candidate, 17, walls):
+                self.pos = candidate
+        self.cooldown = max(0, self.cooldown - dt)
 
-        fire_points=[]
-        fire_points.append((
-            self.x+self.size*(0.5*math.cos(Pi*self.angle/180) + 0.2*math.sin(Pi*self.angle/180)),
-            self.y+self.size*(0.5*math.sin(Pi*self.angle/180) - 0.2*math.cos(Pi*self.angle/180))
-        ))
-        fire_points.append((
-            self.x+self.size*(0.5*math.cos(Pi*self.angle/180) - 0.2*math.sin(Pi*self.angle/180)),
-            self.y+self.size*(0.5*math.sin(Pi*self.angle/180) + 0.2*math.cos(Pi*self.angle/180))
-        ))
-        fire_points.append((
-            self.x+self.size*(1.3*math.cos(Pi*self.angle/180) - 0.2*math.sin(Pi*self.angle/180)),
-            self.y+self.size*(1.3*math.sin(Pi*self.angle/180) + 0.2*math.cos(Pi*self.angle/180))
-        ))
-        fire_points.append((
-            self.x+self.size*(1.3*math.cos(Pi*self.angle/180) + 0.2*math.sin(Pi*self.angle/180)),
-            self.y+self.size*(1.3*math.sin(Pi*self.angle/180) - 0.2*math.cos(Pi*self.angle/180))
-        ))       
-        pygame.draw.polygon(screen,self.color,fire_points,0)
+    def draw(self, screen):
+        if not self.alive:
+            return
+        direction = unit(self.angle)
+        side = pygame.Vector2(-direction.y, direction.x)
+        center = self.pos
+        body = [center + direction * 18 + side * 14,
+                center + direction * 18 - side * 14,
+                center - direction * 18 - side * 14,
+                center - direction * 18 + side * 14]
+        pygame.draw.circle(screen, (15, 19, 29), center + (3, 4), 24)
+        pygame.draw.polygon(screen, self.color, body)
+        pygame.draw.polygon(screen, (240, 246, 252), body, 2)
+        pygame.draw.line(screen, (18, 25, 37), center, center + direction * 27, 12)
+        pygame.draw.line(screen, self.color, center, center + direction * 27, 8)
+        pygame.draw.circle(screen, (23, 32, 47), center, 10)
+        pygame.draw.circle(screen, self.color, center, 7)
 
-    def forward(self,fps):
-        self.x+=self.speed*math.cos(Pi*self.angle/180)/fps
-        self.y+=self.speed*math.sin(Pi*self.angle/180)/fps
 
-    def back(self,fps):
-        self.x+=self.speed*math.cos(Pi*self.angle/180)/fps
-        self.y+=self.speed*math.sin(Pi*self.angle/180)/fps
-
-    def turn_left(self,fps):
-        self.angle-=self.angle_speed/fps
-
-    def turn_right(self,fps):
-        self.angle+=self.angle_speed/fps
-
+@dataclass
 class Bullet:
+    pos: pygame.Vector2
+    velocity: pygame.Vector2
+    owner: int
+    life: float = 7.0
+    bounces: int = 0
+    age: float = 0
+
+    def update(self, dt, walls):
+        self.life -= dt
+        self.age += dt
+        # Small steps prevent fast shots from passing through thin walls.
+        steps = max(1, math.ceil(self.velocity.length() * dt / 4))
+        step = dt / steps
+        for _ in range(steps):
+            next_x = self.pos + pygame.Vector2(self.velocity.x * step, 0)
+            if hits_wall(next_x, 5, walls):
+                self.velocity.x *= -1
+                self.bounces += 1
+            else:
+                self.pos = next_x
+            next_y = self.pos + pygame.Vector2(0, self.velocity.y * step)
+            if hits_wall(next_y, 5, walls):
+                self.velocity.y *= -1
+                self.bounces += 1
+            else:
+                self.pos = next_y
+        return self.life > 0 and self.bounces <= 9
+
+    def draw(self, screen):
+        pygame.draw.circle(screen, (255, 233, 174), self.pos, 8)
+        pygame.draw.circle(screen, WHITE, self.pos, 4)
+
+
+class Game:
     def __init__(self):
-        self.x=300
-        self.y=300
-        self.size=10.0
-    def draw(self,screen):
-        pygame.draw.circle(screen,BULLET_COLOR,(self.x,self.y),self.size,0)
+        pygame.init()
+        pygame.display.set_caption('坦克动荡 · Tank Trouble')
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        self.clock = pygame.time.Clock()
+        self.font = self.load_font(27)
+        self.small = self.load_font(19)
+        self.big = self.load_font(58)
+        self.mode = 'menu'
+        self.solo = False
+        self.maze = None
+        self.tanks = []
+        self.bullets = []
+        self.round_delay = 0
+        self.message = ''
+        self.ai_shoot_timer = 0
 
-field=Field()
-tank1=Tank(GREEN)
-tank2=Tank(BLUE)
-tanks=[tank1,tank2]
+    @staticmethod
+    def load_font(size):
+        font_files = [
+            '/System/Library/Fonts/STHeiti Medium.ttc',
+            '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
+            '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+            'C:/Windows/Fonts/msyh.ttc',
+        ]
+        for font_file in font_files:
+            if Path(font_file).is_file():
+                return pygame.font.Font(font_file, size)
+        candidates = ['PingFang SC', 'Heiti SC', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Arial Unicode MS']
+        for name in candidates:
+            path = pygame.font.match_font(name)
+            if path:
+                return pygame.font.Font(path, size)
+        return pygame.font.SysFont(None, size)
 
-pygame.init()
-screen = pygame.display.set_mode((SCREAN_LENGTH,SCREAN_WIDTH))
-fps=60.0
-isRunning = True 
+    def start(self, solo):
+        self.solo = solo
+        self.tanks = [Tank(pygame.Vector2(), 0, YELLOW, 'P1'),
+                      Tank(pygame.Vector2(), math.pi, BLUE, 'AI' if solo else 'P2')]
+        self.new_round()
 
-while isRunning:
-    field.draw_field(screen)
-    field.draw_tanks(screen,tanks)
+    def new_round(self):
+        self.maze = Maze()
+        left = (1, random.randrange(ROWS))
+        right = (COLS - 2, random.randrange(ROWS))
+        self.tanks[0].pos = cell_center(left)
+        self.tanks[0].angle = 0
+        self.tanks[1].pos = cell_center(right)
+        self.tanks[1].angle = math.pi
+        for tank in self.tanks:
+            tank.alive = True
+            tank.cooldown = 0
+        self.bullets = []
+        self.round_delay = 0
+        self.message = ''
+        self.mode = 'playing'
+        self.ai_shoot_timer = 0
 
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            isRunning=False
-        keys=pygame.key.get_pressed()
-        if keys[pygame.K_w]:
-            tank1.forward(fps)
-        if keys[pygame.K_s]:
-            tank1.back(fps)
-        if keys[pygame.K_a]:
-            tank1.turn_left(fps)
-        if keys[pygame.K_d]:
-            tank1.turn_right(fps)
+    def shoot(self, index):
+        tank = self.tanks[index]
+        if not tank.alive or tank.cooldown > 0 or sum(b.owner == index for b in self.bullets) >= 5:
+            return
+        direction = unit(tank.angle)
+        muzzle = tank.pos + direction * 28
+        if not hits_wall(muzzle, 5, self.maze.walls):
+            self.bullets.append(Bullet(muzzle, direction * 420, index))
+            tank.cooldown = .34
 
-        if keys[pygame.K_UP]:
-            tank2.forward(fps)
-        if keys[pygame.K_DOWN]:
-            tank2.back(fps)
-        if keys[pygame.K_LEFT]:
-            tank2.turn_left(fps)
-        if keys[pygame.K_RIGHT]:
-            tank2.turn_right(fps)
+    def ai_update(self, dt):
+        ai, target = self.tanks[1], self.tanks[0]
+        route = self.maze.route(grid_cell(ai.pos), grid_cell(target.pos))
+        destination = cell_center(route[1] if len(route) > 1 else route[0])
+        if len(route) <= 2:
+            destination = target.pos
+        vector = destination - ai.pos
+        desired = math.atan2(vector.y, vector.x)
+        difference = (desired - ai.angle + math.pi) % (2 * math.pi) - math.pi
+        turn = clamp(difference * 3, -1, 1)
+        forward = 1 if abs(difference) < .85 else 0
+        ai.update(dt, forward, turn, self.maze.walls)
+        self.ai_shoot_timer -= dt
+        toward_player = target.pos - ai.pos
+        aim_difference = (math.atan2(toward_player.y, toward_player.x) - ai.angle + math.pi) % (2 * math.pi) - math.pi
+        if abs(aim_difference) < .22 and self.ai_shoot_timer <= 0:
+            # Ray sample ensures the AI fires only along a clear corridor.
+            clear = all(not hits_wall(ai.pos + toward_player * (i / 24), 5, self.maze.walls)
+                        for i in range(2, 24))
+            if clear:
+                self.shoot(1)
+                self.ai_shoot_timer = .8
 
-    pygame.display.flip()
-    time.sleep(1/fps)
+    def update(self, dt):
+        if self.mode != 'playing':
+            return
+        keys = pygame.key.get_pressed()
+        if self.round_delay > 0:
+            self.round_delay -= dt
+            if self.round_delay <= 0:
+                self.new_round()
+            return
+        self.tanks[0].update(dt, int(keys[pygame.K_w]) - int(keys[pygame.K_s]),
+                             int(keys[pygame.K_d]) - int(keys[pygame.K_a]), self.maze.walls)
+        if self.solo:
+            self.ai_update(dt)
+        else:
+            self.tanks[1].update(dt, int(keys[pygame.K_UP]) - int(keys[pygame.K_DOWN]),
+                                 int(keys[pygame.K_RIGHT]) - int(keys[pygame.K_LEFT]), self.maze.walls)
+        if keys[pygame.K_SPACE]:
+            self.shoot(0)
+        if not self.solo and (keys[pygame.K_RETURN] or keys[pygame.K_KP_ENTER]):
+            self.shoot(1)
+        for bullet in self.bullets[:]:
+            if not bullet.update(dt, self.maze.walls):
+                self.bullets.remove(bullet)
+                continue
+            for index, tank in enumerate(self.tanks):
+                if tank.alive and (index != bullet.owner or bullet.age > .42) and tank.pos.distance_to(bullet.pos) < 20:
+                    tank.alive = False
+                    self.tanks[1 - index].score += 1
+                    self.message = f'{self.tanks[1 - index].name}  得分！'
+                    self.round_delay = 2.0
+                    self.bullets.clear()
+                    return
+
+    def label(self, text, font, color, center):
+        surface = font.render(text, True, color)
+        self.screen.blit(surface, surface.get_rect(center=center))
+
+    def draw(self):
+        self.screen.fill(BG)
+        if self.mode == 'menu':
+            self.label('坦克动荡', self.big, WHITE, (WIDTH // 2, 205))
+            self.label('TANK TROUBLE', self.small, MUTED, (WIDTH // 2, 260))
+            self.label('迷宫对战  ·  弹墙炮弹  ·  一击得分', self.font, WHITE, (WIDTH // 2, 335))
+            pygame.draw.rect(self.screen, YELLOW, (380, 407, 360, 62), border_radius=12)
+            self.label('1   单人对战 AI', self.font, BG, (WIDTH // 2, 438))
+            pygame.draw.rect(self.screen, BLUE, (380, 486, 360, 62), border_radius=12)
+            self.label('2   本地双人对战', self.font, BG, (WIDTH // 2, 517))
+            self.label('P1: W A S D 移动 · 空格射击    P2: 方向键移动 · 回车射击',
+                       self.small, MUTED, (WIDTH // 2, 616))
+            self.label('按 1 或 2 开始 · Esc 暂停 / 返回', self.small, MUTED, (WIDTH // 2, 660))
+        else:
+            self.maze.draw(self.screen)
+            for bullet in self.bullets:
+                bullet.draw(self.screen)
+            for tank in self.tanks:
+                tank.draw(self.screen)
+            self.label('坦克动荡', self.font, WHITE, (110, 48))
+            self.label(f'P1  {self.tanks[0].score}', self.font, YELLOW, (430, 48))
+            self.label('—', self.font, MUTED, (WIDTH // 2, 48))
+            self.label(f'{self.tanks[1].name}  {self.tanks[1].score}', self.font, BLUE, (690, 48))
+            self.label('Esc 暂停', self.small, MUTED, (1000, 48))
+            if self.message:
+                self.label(self.message, self.big, WHITE, (WIDTH // 2, HEIGHT // 2))
+            if self.mode == 'paused':
+                shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+                shade.fill((8, 12, 21, 185))
+                self.screen.blit(shade, (0, 0))
+                self.label('已暂停', self.big, WHITE, (WIDTH // 2, 310))
+                self.label('Esc 继续   ·   R 重开   ·   M 返回菜单', self.font, MUTED,
+                           (WIDTH // 2, 385))
+        pygame.display.flip()
+
+    def run(self):
+        running = True
+        while running:
+            dt = min(self.clock.tick(FPS) / 1000, .05)
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if self.mode == 'menu':
+                        if event.key == pygame.K_1:
+                            self.start(True)
+                        elif event.key == pygame.K_2:
+                            self.start(False)
+                        elif event.key == pygame.K_ESCAPE:
+                            running = False
+                    elif event.key == pygame.K_ESCAPE:
+                        self.mode = 'paused' if self.mode == 'playing' else 'playing'
+                    elif self.mode == 'paused':
+                        if event.key == pygame.K_r:
+                            for tank in self.tanks:
+                                tank.score = 0
+                            self.new_round()
+                        elif event.key == pygame.K_m:
+                            self.mode = 'menu'
+            if self.mode == 'menu' and pygame.mouse.get_pressed()[0]:
+                mx, my = pygame.mouse.get_pos()
+                if 380 <= mx <= 740 and 407 <= my <= 469:
+                    self.start(True)
+                elif 380 <= mx <= 740 and 486 <= my <= 548:
+                    self.start(False)
+            self.update(dt)
+            self.draw()
+        pygame.quit()
 
 
+if __name__ == '__main__':
+    Game().run()

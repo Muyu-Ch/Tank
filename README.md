@@ -1,6 +1,22 @@
-#This is a project to rebuild the Tank2 form 4399#
+# 坦克动荡（Pygame）
 
-design:
+一个受经典迷宫坦克对战游戏启发的本地桌面游戏。支持单人挑战 AI 和同键盘双人对战；炮弹会在墙壁上反弹，击中坦克即可得分并开始下一回合。
 
-tank.py:game
-ai.py : gameai
+## 启动
+
+需要 Python 3.9 或更新版本：
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 tank.py
+```
+
+## 操作
+
+| 操作 | 玩家 1 | 玩家 2 |
+| --- | --- | --- |
+| 前进 / 后退 | W / S | ↑ / ↓ |
+| 左转 / 右转 | A / D | ← / → |
+| 射击 | 空格 | 回车 |
+
+主菜单按 `1` 开始单人模式，按 `2` 开始双人模式。游戏中按 `Esc` 暂停；暂停时按 `R` 重开比分，按 `M` 返回菜单。每名玩家最多同时有 5 发炮弹在场，炮弹可反弹 9 次。
