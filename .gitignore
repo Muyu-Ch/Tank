@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .venv/
+tank_nn_model.npz
+tank_nn_128x3_model.npz
+tankai_qtable.json
