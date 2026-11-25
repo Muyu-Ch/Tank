@@ -15,12 +15,10 @@ OX, OY = 32, 112
 FIELD_W, FIELD_H = CELL * COLS, CELL * ROWS
 FPS = 60
 WALL = 10
-BG = (18, 23, 35)
-FLOOR = (30, 39, 57)
-GRID = (38, 48, 67)
-WALL_COLOR = (128, 149, 178)
-WHITE = (238, 244, 251)
-MUTED = (143, 159, 183)
+BG = (255, 255, 255)
+WALL_COLOR = (0, 0, 0)
+TEXT = (0, 0, 0)
+MUTED = (95, 95, 95)
 YELLOW = (255, 194, 73)
 BLUE = (71, 185, 255)
 
@@ -110,14 +108,8 @@ class Maze:
         return [start]
 
     def draw(self, screen):
-        pygame.draw.rect(screen, FLOOR, (OX, OY, FIELD_W, FIELD_H))
-        for x in range(COLS + 1):
-            pygame.draw.line(screen, GRID, (OX + x * CELL, OY), (OX + x * CELL, OY + FIELD_H))
-        for y in range(ROWS + 1):
-            pygame.draw.line(screen, GRID, (OX, OY + y * CELL), (OX + FIELD_W, OY + y * CELL))
         for rect in self.walls:
-            pygame.draw.rect(screen, (59, 75, 102), rect.move(2, 3), border_radius=3)
-            pygame.draw.rect(screen, WALL_COLOR, rect, border_radius=3)
+            pygame.draw.rect(screen, WALL_COLOR, rect)
 
 
 def hits_wall(pos, radius, walls):
@@ -166,13 +158,18 @@ class Tank:
                 center + direction * 18 - side * 14,
                 center - direction * 18 - side * 14,
                 center - direction * 18 + side * 14]
-        pygame.draw.circle(screen, (15, 19, 29), center + (3, 4), 24)
+        barrel = [center + direction * 8 + side * 5,
+                  center + direction * 31 + side * 5,
+                  center + direction * 31 - side * 5,
+                  center + direction * 8 - side * 5]
+        # The body covers the base of the barrel, so it always appears attached
+        # to the front of the tank at every rotation angle.
+        pygame.draw.polygon(screen, self.color, barrel)
+        pygame.draw.polygon(screen, TEXT, barrel, 2)
         pygame.draw.polygon(screen, self.color, body)
-        pygame.draw.polygon(screen, (240, 246, 252), body, 2)
-        pygame.draw.line(screen, (18, 25, 37), center, center + direction * 27, 12)
-        pygame.draw.line(screen, self.color, center, center + direction * 27, 8)
-        pygame.draw.circle(screen, (23, 32, 47), center, 10)
-        pygame.draw.circle(screen, self.color, center, 7)
+        pygame.draw.polygon(screen, TEXT, body, 2)
+        pygame.draw.circle(screen, TEXT, center, 8)
+        pygame.draw.circle(screen, self.color, center, 5)
 
 
 @dataclass
@@ -206,8 +203,7 @@ class Bullet:
         return self.life > 0 and self.bounces <= 9
 
     def draw(self, screen):
-        pygame.draw.circle(screen, (255, 233, 174), self.pos, 8)
-        pygame.draw.circle(screen, WHITE, self.pos, 4)
+        pygame.draw.circle(screen, TEXT, self.pos, 5)
 
 
 class Game:
@@ -342,34 +338,30 @@ class Game:
     def draw(self):
         self.screen.fill(BG)
         if self.mode == 'menu':
-            self.label('坦克动荡', self.big, WHITE, (WIDTH // 2, 205))
-            self.label('TANK TROUBLE', self.small, MUTED, (WIDTH // 2, 260))
-            self.label('迷宫对战  ·  弹墙炮弹  ·  一击得分', self.font, WHITE, (WIDTH // 2, 335))
-            pygame.draw.rect(self.screen, YELLOW, (380, 407, 360, 62), border_radius=12)
-            self.label('1   单人对战 AI', self.font, BG, (WIDTH // 2, 438))
-            pygame.draw.rect(self.screen, BLUE, (380, 486, 360, 62), border_radius=12)
-            self.label('2   本地双人对战', self.font, BG, (WIDTH // 2, 517))
+            self.label('坦克动荡', self.big, TEXT, (WIDTH // 2, 205))
+            pygame.draw.rect(self.screen, TEXT, (380, 407, 360, 62), 2)
+            self.label('1   单人对战 AI', self.font, TEXT, (WIDTH // 2, 438))
+            pygame.draw.rect(self.screen, TEXT, (380, 486, 360, 62), 2)
+            self.label('2   本地双人对战', self.font, TEXT, (WIDTH // 2, 517))
             self.label('P1: W A S D 移动 · 空格射击    P2: 方向键移动 · 回车射击',
                        self.small, MUTED, (WIDTH // 2, 616))
-            self.label('按 1 或 2 开始 · Esc 暂停 / 返回', self.small, MUTED, (WIDTH // 2, 660))
         else:
             self.maze.draw(self.screen)
             for bullet in self.bullets:
                 bullet.draw(self.screen)
             for tank in self.tanks:
                 tank.draw(self.screen)
-            self.label('坦克动荡', self.font, WHITE, (110, 48))
-            self.label(f'P1  {self.tanks[0].score}', self.font, YELLOW, (430, 48))
+            self.label(f'P1  {self.tanks[0].score}', self.font, TEXT, (440, 48))
             self.label('—', self.font, MUTED, (WIDTH // 2, 48))
-            self.label(f'{self.tanks[1].name}  {self.tanks[1].score}', self.font, BLUE, (690, 48))
-            self.label('Esc 暂停', self.small, MUTED, (1000, 48))
+            self.label(f'{self.tanks[1].name}  {self.tanks[1].score}', self.font, TEXT, (680, 48))
+            self.label('Esc 暂停', self.small, MUTED, (1010, 48))
             if self.message:
-                self.label(self.message, self.big, WHITE, (WIDTH // 2, HEIGHT // 2))
+                self.label(self.message, self.big, TEXT, (WIDTH // 2, HEIGHT // 2))
             if self.mode == 'paused':
                 shade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-                shade.fill((8, 12, 21, 185))
+                shade.fill((255, 255, 255, 210))
                 self.screen.blit(shade, (0, 0))
-                self.label('已暂停', self.big, WHITE, (WIDTH // 2, 310))
+                self.label('已暂停', self.big, TEXT, (WIDTH // 2, 310))
                 self.label('Esc 继续   ·   R 重开   ·   M 返回菜单', self.font, MUTED,
                            (WIDTH // 2, 385))
         pygame.display.flip()
