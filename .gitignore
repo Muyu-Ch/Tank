@@ -3,4 +3,5 @@ __pycache__/
 .venv/
 tank_nn_model.npz
 tank_nn_128x3_model.npz
+tank_nn_fixed_map_model.npz
 tankai_qtable.json

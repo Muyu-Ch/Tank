@@ -20,7 +20,7 @@ if '--watch' not in sys.argv:
 
 import pygame
 
-from tank import Game, hits_wall, unit
+from tank import COLS, ROWS, Game, Maze, hits_wall, unit
 
 DT = 1 / 30
 ACTIONS = [(forward, turn, shoot)
@@ -37,14 +37,23 @@ def angle_difference(a, b):
 class TankEnv:
     """One episode of the actual game physics against its existing rule-based AI."""
 
-    def __init__(self, max_steps=600):
+    def __init__(self, max_steps=600, fixed_map=False, map_seed=42):
         self.game = Game()
         self.game.start(True)
         self.max_steps = max_steps
         self.steps = 0
+        self.fixed_maze = Maze(random.Random(map_seed)) if fixed_map else None
 
     def reset(self):
-        self.game.new_round()
+        if self.fixed_maze is None:
+            self.game.new_round()
+        else:
+            cells = [(x, y) for y in range(ROWS) for x in range(COLS)]
+            while True:
+                left, right = random.sample(cells, 2)
+                if abs(left[0] - right[0]) + abs(left[1] - right[1]) >= 6:
+                    break
+            self.game.new_round(maze=self.fixed_maze, left=left, right=right)
         self.steps = 0
         return self.observe()
 

@@ -44,4 +44,8 @@ python3 tank_nn.py --evaluate 100
 python3 tank_nn.py --watch
 ```
 
-模型默认保存为 `tank_nn_128x3_model.npz`；旧版 64×2 模型文件 `tank_nn_model.npz` 不会被覆盖，但与新结构不兼容。`--model 路径` 可以指定新结构的模型文件。`--evaluate` 会输出胜、负、平局数。神经网络版仍是实验原型，需要依据独立评估结果判断效果。
+神经网络版默认使用固定迷宫，但每局随机选择相距至少 6 格的两个出生点。模型保存为 `tank_nn_fixed_map_model.npz`，不会覆盖之前的模型。`--evaluate` 在固定迷宫上输出胜、负、平局数；加上 `--random-map` 可以测试随机迷宫上的泛化。`--model 路径` 可指定模型文件。
+
+```bash
+python3 tank_nn.py --evaluate 100 --random-map
+```

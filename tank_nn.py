@@ -18,7 +18,8 @@ import pygame
 from tank import COLS, ROWS, OX, OY, FIELD_W, FIELD_H
 from tankai import ACTIONS, TankEnv
 
-MODEL = Path(__file__).with_name('tank_nn_128x3_model.npz')
+MODEL = Path(__file__).with_name('tank_nn_fixed_map_model.npz')
+MAP_SEED = 42
 MAX_BULLETS = 10
 MAP_FEATURES = COLS * ROWS * 2
 INPUT_SIZE = MAP_FEATURES + 10 + MAX_BULLETS * 5
@@ -127,9 +128,9 @@ def choose(net, state, epsilon):
     return int(np.argmax(net.predict(state[None, :])[0]))
 
 
-def evaluate(net, games=100, seed=12345):
+def evaluate(net, games=100, seed=12345, fixed_map=True):
     random.seed(seed)
-    env = TankEnv()
+    env = TankEnv(fixed_map=fixed_map, map_seed=MAP_SEED)
     outcomes = [0, 0, 0]
     for _ in range(games):
         env.reset()
@@ -143,10 +144,10 @@ def evaluate(net, games=100, seed=12345):
     return outcomes
 
 
-def train(episodes, model_path, seed):
+def train(episodes, model_path, seed, fixed_map=True):
     random.seed(seed)
     rng = np.random.default_rng(seed)
-    env = TankEnv()
+    env = TankEnv(fixed_map=fixed_map, map_seed=MAP_SEED)
     online = Network(rng)
     if model_path.exists():
         online = Network.load(model_path)
@@ -193,9 +194,9 @@ def train(episodes, model_path, seed):
     print(f'Saved model: {model_path}')
 
 
-def watch(model_path):
+def watch(model_path, fixed_map=True):
     net = Network.load(model_path)
-    env = TankEnv()
+    env = TankEnv(fixed_map=fixed_map, map_seed=MAP_SEED)
     env.reset()
     clock = pygame.time.Clock()
     running = True
@@ -223,17 +224,20 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--watch', action='store_true')
     parser.add_argument('--evaluate', type=int, metavar='GAMES')
+    parser.add_argument('--random-map', action='store_true',
+                        help='Use a new random maze each round instead of the fixed training maze')
     args = parser.parse_args()
     if args.watch:
-        watch(args.model)
+        watch(args.model, fixed_map=not args.random_map)
     elif args.evaluate is not None:
         if args.evaluate < 1:
             parser.error('--evaluate must be positive')
-        print('win/loss/draw:', evaluate(Network.load(args.model), args.evaluate, args.seed))
+        print('win/loss/draw:', evaluate(Network.load(args.model), args.evaluate,
+                                         args.seed, fixed_map=not args.random_map))
     else:
         if args.episodes < 1:
             parser.error('--episodes must be positive')
-        train(args.episodes, args.model, args.seed)
+        train(args.episodes, args.model, args.seed, fixed_map=not args.random_map)
 
 
 if __name__ == '__main__':

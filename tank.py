@@ -37,7 +37,8 @@ def clamp(value, low, high):
 
 
 class Maze:
-    def __init__(self):
+    def __init__(self, rng=None):
+        rng = rng or random
         self.openings = {(x, y): set() for y in range(ROWS) for x in range(COLS)}
         seen = {(0, 0)}
         stack = [(0, 0)]
@@ -52,21 +53,21 @@ class Maze:
             if not choices:
                 stack.pop()
                 continue
-            nxt, name, reverse = random.choice(choices)
+            nxt, name, reverse = rng.choice(choices)
             self.openings[(x, y)].add(name)
             self.openings[nxt].add(reverse)
             seen.add(nxt)
             stack.append(nxt)
         # Add loops so players have multiple routes through the arena.
         for _ in range(20):
-            x, y = random.randrange(COLS), random.randrange(ROWS)
+            x, y = rng.randrange(COLS), rng.randrange(ROWS)
             directions = []
             if x + 1 < COLS:
                 directions.append(((x + 1, y), 'E', 'W'))
             if y + 1 < ROWS:
                 directions.append(((x, y + 1), 'S', 'N'))
             if directions:
-                nxt, name, reverse = random.choice(directions)
+                nxt, name, reverse = rng.choice(directions)
                 self.openings[(x, y)].add(name)
                 self.openings[nxt].add(reverse)
         self.walls = []
@@ -248,10 +249,10 @@ class Game:
                       Tank(pygame.Vector2(), math.pi, BLUE, 'AI' if solo else 'P2')]
         self.new_round()
 
-    def new_round(self):
-        self.maze = Maze()
-        left = (1, random.randrange(ROWS))
-        right = (COLS - 2, random.randrange(ROWS))
+    def new_round(self, maze=None, left=None, right=None):
+        self.maze = maze if maze is not None else Maze()
+        left = left if left is not None else (1, random.randrange(ROWS))
+        right = right if right is not None else (COLS - 2, random.randrange(ROWS))
         self.tanks[0].pos = cell_center(left)
         self.tanks[0].angle = 0
         self.tanks[1].pos = cell_center(right)
