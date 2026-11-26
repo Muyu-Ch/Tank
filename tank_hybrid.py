@@ -13,6 +13,7 @@ import pygame
 from tank import cell_center, grid_cell, hits_wall
 from tankai import ACTIONS, DT, TankEnv
 from tank_nn import MAP_SEED, MODEL, Network, observation
+from tank_dodge import ACTIONS as DODGE_ACTIONS, dodge_frame
 
 
 class HybridAgent:
@@ -23,7 +24,7 @@ class HybridAgent:
         self.shot_timer = 0.0
         self.network_decisions = 0
 
-    def reset(self):
+    def reset(self, game=None):
         self.shot_timer = 0.0
         self.network_decisions = 0
 
@@ -65,6 +66,37 @@ class HybridAgent:
             values = self.network.predict(observation(game, self.player_index)[None, :])[0]
             forward, turn, _ = ACTIONS[int(np.argmax(values))]
             self.network_decisions += 1
+        return ACTIONS.index((forward, turn, shoot))
+
+
+class DodgeAttackAgent:
+    """Same navigation and firing, with the dedicated dodge network on threat."""
+
+    def __init__(self, network, player_index):
+        self.network = network
+        self.player_index = player_index
+        self.planner = HybridAgent(None, use_network=False, player_index=player_index)
+        self.previous = None
+        self.dodge_decisions = 0
+
+    def frame(self, game):
+        enemy_bullets = [bullet for bullet in game.bullets if bullet.owner != self.player_index]
+        return dodge_frame(game.tanks[self.player_index], game.maze.walls, enemy_bullets)
+
+    def reset(self, game):
+        self.planner.reset()
+        self.previous = self.frame(game)
+        self.dodge_decisions = 0
+
+    def act(self, game, dt=DT):
+        forward, turn, shoot = ACTIONS[self.planner.act(game, dt)]
+        current = self.frame(game)
+        if HybridAgent.imminent_bullet(game, self.player_index):
+            state = np.concatenate((current, self.previous))
+            index = int(np.argmax(self.network.predict(state[None, :])[0]))
+            forward, turn = DODGE_ACTIONS[index]
+            self.dodge_decisions += 1
+        self.previous = current
         return ACTIONS.index((forward, turn, shoot))
 
 

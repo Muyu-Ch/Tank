@@ -221,7 +221,8 @@ class Game:
         self.solo = False
         self.strong_ai = False
         self.hybrid_ai = None
-        self.strong_maze = None
+        self.ai_decision_clock = 0.0
+        self.ai_decision = (0, 0, False)
         self.menu_error = ''
         self.maze = None
         self.tanks = []
@@ -254,30 +255,28 @@ class Game:
             # existing Game and Tank classes rather than import a second copy.
             sys.modules.setdefault('tank', sys.modules[__name__])
             try:
-                from tank_hybrid import HybridAgent
-                from tank_nn import MAP_SEED, MODEL, Network
+                from tank_hybrid import DodgeAttackAgent
+                from tank_dodge import MODEL, DodgeNetwork
                 from tankai import ACTIONS
                 if not MODEL.is_file():
                     raise FileNotFoundError(MODEL)
-                self.hybrid_ai = HybridAgent(Network.load(MODEL), player_index=1)
+                self.hybrid_ai = DodgeAttackAgent(DodgeNetwork.load(MODEL), player_index=1)
                 self.strong_actions = ACTIONS
-                self.strong_maze = Maze(random.Random(MAP_SEED))
             except (ImportError, FileNotFoundError, ValueError) as error:
-                self.menu_error = f'最强 AI 无法启动：{error}'
+                self.menu_error = f'AI 1.2 无法启动：{error}'
                 return
         else:
             self.hybrid_ai = None
-            self.strong_maze = None
         self.menu_error = ''
         self.solo = solo
         self.strong_ai = strong
         self.tanks = [Tank(pygame.Vector2(), 0, YELLOW, 'P1'),
                       Tank(pygame.Vector2(), math.pi, BLUE,
-                           '最强AI' if strong else 'AI' if solo else 'P2')]
+                           'AI 1.2' if strong else 'AI' if solo else 'P2')]
         self.new_round()
 
     def new_round(self, maze=None, left=None, right=None):
-        self.maze = maze if maze is not None else self.strong_maze if self.strong_ai else Maze()
+        self.maze = maze if maze is not None else Maze()
         if self.strong_ai and left is None and right is None:
             cells = [(x, y) for y in range(ROWS) for x in range(COLS)]
             while True:
@@ -298,8 +297,10 @@ class Game:
         self.message = ''
         self.mode = 'playing'
         self.ai_shoot_timer = 0
+        self.ai_decision_clock = 0.0
+        self.ai_decision = (0, 0, False)
         if self.hybrid_ai is not None:
-            self.hybrid_ai.reset()
+            self.hybrid_ai.reset(self)
 
     def shoot(self, index):
         tank = self.tanks[index]
@@ -346,7 +347,11 @@ class Game:
         self.tanks[0].update(dt, int(keys[pygame.K_w]) - int(keys[pygame.K_s]),
                              int(keys[pygame.K_d]) - int(keys[pygame.K_a]), self.maze.walls)
         if self.strong_ai:
-            forward, turn, shoot = self.strong_actions[self.hybrid_ai.act(self, dt)]
+            self.ai_decision_clock += dt
+            if self.ai_decision_clock >= 1 / 30:
+                self.ai_decision_clock -= 1 / 30
+                self.ai_decision = self.strong_actions[self.hybrid_ai.act(self, 1 / 30)]
+            forward, turn, shoot = self.ai_decision
             self.tanks[1].update(dt, forward, turn, self.maze.walls)
             if shoot:
                 self.shoot(1)
@@ -385,10 +390,10 @@ class Game:
             pygame.draw.rect(self.screen, TEXT, (380, 393, 360, 62), 2)
             self.label('2   本地双人对战', self.font, TEXT, (WIDTH // 2, 424))
             pygame.draw.rect(self.screen, TEXT, (380, 472, 360, 62), 2)
-            self.label('3   挑战最强 AI', self.font, TEXT, (WIDTH // 2, 503))
+            self.label('3   挑战 AI 1.2', self.font, TEXT, (WIDTH // 2, 503))
             self.label('P1: W A S D 移动 · 空格射击    P2: 方向键移动 · 回车射击',
                        self.small, MUTED, (WIDTH // 2, 603))
-            self.label('最强 AI 模式使用固定地图', self.small, MUTED, (WIDTH // 2, 643))
+            self.label('AI 1.2 模式每局生成随机地图', self.small, MUTED, (WIDTH // 2, 643))
             if self.menu_error:
                 self.label(self.menu_error, self.small, TEXT, (WIDTH // 2, 690))
         else:
@@ -397,7 +402,7 @@ class Game:
                 bullet.draw(self.screen)
             for tank in self.tanks:
                 tank.draw(self.screen)
-            self.label(f'P1  {self.tanks[0].score}', self.font, TEXT, (440, 48))
+            self.label(f'{self.tanks[0].name}  {self.tanks[0].score}', self.font, TEXT, (440, 48))
             self.label('—', self.font, MUTED, (WIDTH // 2, 48))
             self.label(f'{self.tanks[1].name}  {self.tanks[1].score}', self.font, TEXT, (680, 48))
             self.label('Esc 暂停', self.small, MUTED, (1010, 48))
