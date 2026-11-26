@@ -10,13 +10,8 @@ import json
 import math
 import os
 import random
-import sys
 from collections import defaultdict
 from pathlib import Path
-
-if '--watch' not in sys.argv:
-    os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
-    os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 
 import pygame
 
@@ -37,24 +32,37 @@ def angle_difference(a, b):
 class TankEnv:
     """One episode of the actual game physics against its existing rule-based AI."""
 
-    def __init__(self, max_steps=600, fixed_map=False, map_seed=42):
+    def __init__(self, max_steps=600, fixed_map=False, map_seed=42,
+                 spawn_mode='legacy', spawn_seed=None):
         self.game = Game()
         self.game.start(True)
         self.max_steps = max_steps
         self.steps = 0
         self.fixed_maze = Maze(random.Random(map_seed)) if fixed_map else None
+        self.spawn_mode = spawn_mode
+        self.spawn_rng = random.Random(spawn_seed)
+        self.terminated = False
+        self.truncated = False
+        self.last_hit = None
 
     def reset(self):
-        if self.fixed_maze is None:
-            self.game.new_round()
-        else:
+        if self.spawn_mode == 'anywhere':
             cells = [(x, y) for y in range(ROWS) for x in range(COLS)]
             while True:
-                left, right = random.sample(cells, 2)
+                left, right = self.spawn_rng.sample(cells, 2)
                 if abs(left[0] - right[0]) + abs(left[1] - right[1]) >= 6:
                     break
             self.game.new_round(maze=self.fixed_maze, left=left, right=right)
+        elif self.fixed_maze is None:
+            self.game.new_round()
+        else:
+            left = (1, self.spawn_rng.randrange(ROWS))
+            right = (COLS - 2, self.spawn_rng.randrange(ROWS))
+            self.game.new_round(maze=self.fixed_maze, left=left, right=right)
         self.steps = 0
+        self.terminated = False
+        self.truncated = False
+        self.last_hit = None
         return self.observe()
 
     def observe(self):
@@ -106,9 +114,12 @@ class TankEnv:
                         and tank.pos.distance_to(bullet.pos) < 20:
                     tank.alive = False
                     self.steps += 1
-                    return self.observe(), (1.0 if index == 1 else -1.0), True
+                    self.terminated = True
+                    self.last_hit = (index, bullet.owner, bullet.bounces)
+                    return self.observe(), (1.0 if index == 1 else -1.0), True, False
         self.steps += 1
-        return self.observe(), 0.0, self.steps >= self.max_steps
+        self.truncated = self.steps >= self.max_steps
+        return self.observe(), 0.0, False, self.truncated
 
 
 class QAgent:
@@ -151,7 +162,8 @@ def train(episodes, model_path, seed):
         epsilon = max(.05, .8 * (.995 ** (episode - 1)))
         while True:
             action = agent.act(state, epsilon)
-            next_state, reward, done = env.step(action)
+            next_state, reward, terminated, truncated = env.step(action)
+            done = terminated or truncated
             agent.learn(state, action, reward, next_state, done)
             state = next_state
             if done:
@@ -181,7 +193,8 @@ def watch(model_path):
         if not running:
             break
         action = agent.act(state)
-        state, reward, done = env.step(action)
+        state, reward, terminated, truncated = env.step(action)
+        done = terminated or truncated
         env.game.draw()
         if done:
             print('AI win' if reward > 0 else 'AI loss' if reward < 0 else 'Draw')
@@ -203,6 +216,8 @@ def main():
     else:
         if args.episodes < 1:
             parser.error('--episodes must be at least 1')
+        os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
+        os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
         train(args.episodes, args.model, args.seed)
 
 

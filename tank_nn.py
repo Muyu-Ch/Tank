@@ -4,13 +4,8 @@ from __future__ import annotations
 import argparse
 import os
 import random
-import sys
 from collections import deque
 from pathlib import Path
-
-if '--watch' not in sys.argv:
-    os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
-    os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 
 import numpy as np
 import pygame
@@ -18,17 +13,19 @@ import pygame
 from tank import COLS, ROWS, OX, OY, FIELD_W, FIELD_H
 from tankai import ACTIONS, TankEnv
 
-MODEL = Path(__file__).with_name('tank_nn_fixed_map_model.npz')
+MODEL = Path(__file__).with_name('tank_nn_v2_best.npz')
 MAP_SEED = 42
 MAX_BULLETS = 10
 MAP_FEATURES = COLS * ROWS * 2
-INPUT_SIZE = MAP_FEATURES + 10 + MAX_BULLETS * 5
+INPUT_SIZE = MAP_FEATURES + 10 + 5 + MAX_BULLETS * 6
 HIDDEN = 128
 HIDDEN_LAYERS = 3
+GAMMA = .98
+N_STEP = 3
 
 
 def observation(game):
-    """Full maze layout, both tanks, and up to ten bullets, normalized to small values."""
+    """Full map plus tank-relative enemy and distance-sorted bullet features."""
     values = []
     for y in range(ROWS):
         for x in range(COLS):
@@ -39,13 +36,25 @@ def observation(game):
                        (tank.pos.y - OY) / FIELD_H,
                        np.cos(tank.angle), np.sin(tank.angle),
                        min(tank.cooldown / .34, 1.0)))
-    for bullet in game.bullets[:MAX_BULLETS]:
-        values.extend(((bullet.pos.x - OX) / FIELD_W,
-                       (bullet.pos.y - OY) / FIELD_H,
-                       bullet.velocity.x / 420,
-                       bullet.velocity.y / 420,
-                       1.0 if bullet.owner == 0 else -1.0))
-    values.extend([0.0] * (MAX_BULLETS - min(len(game.bullets), MAX_BULLETS)) * 5)
+    player, enemy = game.tanks
+    forward = np.asarray((np.cos(player.angle), np.sin(player.angle)))
+    side = np.asarray((-forward[1], forward[0]))
+    offset = np.asarray(enemy.pos - player.pos)
+    relative_angle = enemy.angle - player.angle
+    values.extend((float(offset @ forward / FIELD_W),
+                   float(offset @ side / FIELD_H),
+                   float(np.linalg.norm(offset) / FIELD_W),
+                   float(np.cos(relative_angle)), float(np.sin(relative_angle))))
+    bullets = sorted(game.bullets, key=lambda bullet: player.pos.distance_squared_to(bullet.pos))
+    for bullet in bullets[:MAX_BULLETS]:
+        relative_pos = np.asarray(bullet.pos - player.pos)
+        velocity = np.asarray(bullet.velocity)
+        values.extend((float(relative_pos @ forward / FIELD_W),
+                       float(relative_pos @ side / FIELD_H),
+                       float(velocity @ forward / 420),
+                       float(velocity @ side / 420),
+                       1.0 if bullet.owner == 0 else -1.0, 1.0))
+    values.extend([0.0] * (MAX_BULLETS - min(len(bullets), MAX_BULLETS)) * 6)
     return np.asarray(values, dtype=np.float32)
 
 
@@ -123,49 +132,68 @@ class Network:
 
 
 def choose(net, state, epsilon):
-    if random.random() < epsilon:
+    if epsilon > 0 and random.random() < epsilon:
         return random.randrange(len(ACTIONS))
     return int(np.argmax(net.predict(state[None, :])[0]))
 
 
 def evaluate(net, games=100, seed=12345, fixed_map=True):
     random.seed(seed)
-    env = TankEnv(fixed_map=fixed_map, map_seed=MAP_SEED)
+    env = TankEnv(fixed_map=fixed_map, map_seed=MAP_SEED,
+                  spawn_mode='anywhere', spawn_seed=seed)
     outcomes = [0, 0, 0]
+    self_hits = 0
+    steps = 0
     for _ in range(games):
         env.reset()
         while True:
             action = choose(net, observation(env.game), 0)
-            _, reward, done = env.step(action)
-            if done:
+            _, reward, terminated, truncated = env.step(action)
+            if terminated or truncated:
                 outcomes[0 if reward > 0 else 1 if reward < 0 else 2] += 1
+                self_hits += bool(env.last_hit and env.last_hit[0] == env.last_hit[1] == 0)
+                steps += env.steps
                 break
-    pygame.quit()
-    return outcomes
+    return {'win': outcomes[0], 'loss': outcomes[1], 'draw': outcomes[2],
+            'self_hits': self_hits, 'mean_steps': round(steps / games, 1)}
 
 
-def train(episodes, model_path, seed, fixed_map=True):
+def add_n_step(pending, replay, flush=False):
+    while len(pending) >= N_STEP or (flush and pending):
+        window = list(pending)[:N_STEP]
+        accumulated = sum((GAMMA ** i) * item[2] for i, item in enumerate(window))
+        first, last = window[0], window[-1]
+        replay.append((first[0], first[1], accumulated, last[3], last[4], len(window)))
+        pending.popleft()
+
+
+def train(episodes, model_path, seed, fixed_map=True, eval_interval=200,
+          eval_games=40, resume=False):
     random.seed(seed)
     rng = np.random.default_rng(seed)
-    env = TankEnv(fixed_map=fixed_map, map_seed=MAP_SEED)
-    online = Network(rng)
-    if model_path.exists():
-        online = Network.load(model_path)
+    env = TankEnv(fixed_map=fixed_map, map_seed=MAP_SEED,
+                  spawn_mode='anywhere', spawn_seed=seed)
+    online = Network.load(model_path) if resume else Network(rng)
     target = Network(rng)
     target.copy_from(online)
     replay = deque(maxlen=10000)
     total_steps = 0
     outcomes = [0, 0, 0]
     losses = []
+    best_wins = -1
+    latest_path = model_path.with_name(model_path.stem + '_latest.npz')
     for episode in range(1, episodes + 1):
         env.reset()
         state = observation(env.game)
+        pending = deque()
+        epsilon = max(.05, 1.0 - .95 * (episode - 1) / max(1, .8 * episodes))
         while True:
-            epsilon = max(.05, 1.0 - total_steps / 20000)
             action = choose(online, state, epsilon)
-            _, reward, done = env.step(action)
+            _, reward, terminated, truncated = env.step(action)
+            done = terminated or truncated
             next_state = observation(env.game)
-            replay.append((state, action, reward, next_state, done))
+            pending.append((state, action, reward, next_state, terminated))
+            add_n_step(pending, replay, flush=done)
             state = next_state
             total_steps += 1
             if len(replay) >= 256 and total_steps % 4 == 0:
@@ -174,9 +202,10 @@ def train(episodes, model_path, seed, fixed_map=True):
                 actions = np.asarray([item[1] for item in batch], dtype=np.int64)
                 rewards = np.asarray([item[2] for item in batch], dtype=np.float32)
                 next_states = np.stack([item[3] for item in batch])
-                finished = np.asarray([item[4] for item in batch], dtype=np.float32)
+                terminated_batch = np.asarray([item[4] for item in batch], dtype=np.float32)
+                horizons = np.asarray([item[5] for item in batch], dtype=np.int32)
                 next_q = target.predict(next_states).max(axis=1)
-                targets = rewards + .98 * (1 - finished) * next_q
+                targets = rewards + (GAMMA ** horizons) * (1 - terminated_batch) * next_q
                 losses.append(online.train_batch(states, actions, targets))
             if total_steps % 500 == 0:
                 target.copy_from(online)
@@ -189,14 +218,24 @@ def train(episodes, model_path, seed, fixed_map=True):
                   f'epsilon={epsilon:.2f} loss={mean_loss:.4f}', flush=True)
             outcomes = [0, 0, 0]
             losses = []
-            online.save(model_path)
+        if episode % eval_interval == 0 or episode == episodes:
+            saved_random_state = random.getstate()
+            score = evaluate(online, eval_games, seed=10000, fixed_map=fixed_map)
+            random.setstate(saved_random_state)
+            online.save(latest_path)
+            if score['win'] > best_wins:
+                best_wins = score['win']
+                online.save(model_path)
+            print(f'validation at {episode}: {score}; best wins={best_wins}/{eval_games}',
+                  flush=True)
     pygame.quit()
-    print(f'Saved model: {model_path}')
+    print(f'Saved best: {model_path}; latest: {latest_path}')
 
 
 def watch(model_path, fixed_map=True):
     net = Network.load(model_path)
-    env = TankEnv(fixed_map=fixed_map, map_seed=MAP_SEED)
+    env = TankEnv(fixed_map=fixed_map, map_seed=MAP_SEED,
+                  spawn_mode='anywhere')
     env.reset()
     clock = pygame.time.Clock()
     running = True
@@ -207,7 +246,8 @@ def watch(model_path, fixed_map=True):
         if not running:
             break
         action = choose(net, observation(env.game), 0)
-        _, reward, done = env.step(action)
+        _, reward, terminated, truncated = env.step(action)
+        done = terminated or truncated
         env.game.draw()
         if done:
             print('Neural AI win' if reward > 0 else 'Neural AI loss' if reward < 0 else 'Draw')
@@ -226,18 +266,29 @@ def main():
     parser.add_argument('--evaluate', type=int, metavar='GAMES')
     parser.add_argument('--random-map', action='store_true',
                         help='Use a new random maze each round instead of the fixed training maze')
+    parser.add_argument('--eval-interval', type=int, default=200)
+    parser.add_argument('--eval-games', type=int, default=40)
+    parser.add_argument('--resume', action='store_true')
     args = parser.parse_args()
     if args.watch:
         watch(args.model, fixed_map=not args.random_map)
     elif args.evaluate is not None:
         if args.evaluate < 1:
             parser.error('--evaluate must be positive')
-        print('win/loss/draw:', evaluate(Network.load(args.model), args.evaluate,
-                                         args.seed, fixed_map=not args.random_map))
+        os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
+        os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
+        print(evaluate(Network.load(args.model), args.evaluate,
+                       args.seed, fixed_map=not args.random_map))
     else:
         if args.episodes < 1:
             parser.error('--episodes must be positive')
-        train(args.episodes, args.model, args.seed, fixed_map=not args.random_map)
+        if args.eval_interval < 1 or args.eval_games < 1:
+            parser.error('evaluation interval and game count must be positive')
+        os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
+        os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
+        train(args.episodes, args.model, args.seed, fixed_map=not args.random_map,
+              eval_interval=args.eval_interval, eval_games=args.eval_games,
+              resume=args.resume)
 
 
 if __name__ == '__main__':

@@ -44,8 +44,32 @@ python3 tank_nn.py --evaluate 100
 python3 tank_nn.py --watch
 ```
 
-神经网络版默认使用固定迷宫，但每局随机选择相距至少 6 格的两个出生点。模型保存为 `tank_nn_fixed_map_model.npz`，不会覆盖之前的模型。`--evaluate` 在固定迷宫上输出胜、负、平局数；加上 `--random-map` 可以测试随机迷宫上的泛化。`--model 路径` 可指定模型文件。
+神经网络版默认使用固定迷宫，但每局随机选择相距至少 6 格的两个出生点。当前版本使用相对位置与速度、按距离排序的炮弹输入、三步回报和更长的探索期，并区分击败与超时。训练每 200 局在另一批出生点上评估一次，最佳模型保存为 `tank_nn_v2_best.npz`，最新模型保存为 `tank_nn_v2_best_latest.npz`。重复运行训练会从头开始；如需从最佳模型继续，使用 `--resume`。
+
+`--evaluate` 在固定迷宫上输出胜、负、平局、自身炮弹击中次数和平均局长；加上 `--random-map` 可以测试随机迷宫。两种评估使用相同的全图随机出生规则。`--model 路径` 可指定模型文件。旧模型的输入格式与当前版本不同，不能直接加载。
 
 ```bash
 python3 tank_nn.py --evaluate 100 --random-map
 ```
+
+## 混合对战策略
+
+`tank_hybrid.py` 使用已训练的 `tank_nn_v2_best.npz`。规则规划器负责迷宫寻路和确认射线畅通后的射击；当敌方炮弹的短期轨迹接近自身时，神经网络接管前进、后退和转向决策。这个策略是**规则规划加神经网络闪避**，不是纯神经网络策略。
+
+```bash
+python3 tank_hybrid.py --evaluate 200 --seed 2026
+python3 tank_hybrid.py --evaluate 200 --seed 31415
+python3 tank_hybrid.py --evaluate 200 --seed 2026 --random-map
+python3 tank_hybrid.py --evaluate 200 --seed 2026 --planner-only
+python3 tank_hybrid.py
+```
+
+最后一条命令会打开可视化对局，按 Esc 退出。`--planner-only` 关闭神经网络接管，用于衡量神经网络部分的贡献。固定地图上，混合策略在两组各 200 局的独立评估中分别赢 163 局和 177 局；相同出生序列下，单独使用规则规划器赢 158 局。纯神经网络版仍可通过 `tank_nn.py --watch` 查看。
+
+### 演示画面
+
+```bash
+python3 tank_demo.py
+```
+
+黄色坦克是混合 AI，蓝色坦克是原规则 AI。顶部显示比分和当前控制状态：通常由规划器寻路和瞄准；敌方炮弹在短时间内可能接近自身时，显示“神经网络接管移动”。按 `P` 暂停、`N` 开始下一局、`F` 在固定与随机地图间切换，按 `Esc` 退出。也可用 `python3 tank_demo.py --random-map` 直接在随机地图开始。
