@@ -16,9 +16,10 @@ from tank_nn import MAP_SEED, MODEL, Network, observation
 
 
 class HybridAgent:
-    def __init__(self, network, use_network=True):
+    def __init__(self, network, use_network=True, player_index=0):
         self.network = network
         self.use_network = use_network
+        self.player_index = player_index
         self.shot_timer = 0.0
         self.network_decisions = 0
 
@@ -27,10 +28,10 @@ class HybridAgent:
         self.network_decisions = 0
 
     @staticmethod
-    def imminent_bullet(game):
-        player = game.tanks[0]
+    def imminent_bullet(game, player_index=0):
+        player = game.tanks[player_index]
         for bullet in game.bullets:
-            if bullet.owner == 0:
+            if bullet.owner == player_index:
                 continue
             displacement = player.pos - bullet.pos
             velocity = bullet.velocity
@@ -40,9 +41,10 @@ class HybridAgent:
                 return True
         return False
 
-    def act(self, game):
-        self.shot_timer -= DT
-        player, enemy = game.tanks
+    def act(self, game, dt=DT):
+        self.shot_timer -= dt
+        player = game.tanks[self.player_index]
+        enemy = game.tanks[1 - self.player_index]
         ray = enemy.pos - player.pos
         clear = all(not hits_wall(player.pos + ray * (i / 24), 5, game.maze.walls)
                     for i in range(2, 24))
@@ -59,8 +61,8 @@ class HybridAgent:
         if shoot:
             self.shot_timer = .35
 
-        if self.use_network and self.imminent_bullet(game):
-            values = self.network.predict(observation(game)[None, :])[0]
+        if self.use_network and self.imminent_bullet(game, self.player_index):
+            values = self.network.predict(observation(game, self.player_index)[None, :])[0]
             forward, turn, _ = ACTIONS[int(np.argmax(values))]
             self.network_decisions += 1
         return ACTIONS.index((forward, turn, shoot))

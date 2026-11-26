@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import random
+import sys
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -218,6 +219,10 @@ class Game:
         self.big = self.load_font(58)
         self.mode = 'menu'
         self.solo = False
+        self.strong_ai = False
+        self.hybrid_ai = None
+        self.strong_maze = None
+        self.menu_error = ''
         self.maze = None
         self.tanks = []
         self.bullets = []
@@ -243,14 +248,42 @@ class Game:
                 return pygame.font.Font(path, size)
         return pygame.font.SysFont(None, size)
 
-    def start(self, solo):
+    def start(self, solo, strong=False):
+        if strong:
+            # When this file is run directly, the AI modules should reuse its
+            # existing Game and Tank classes rather than import a second copy.
+            sys.modules.setdefault('tank', sys.modules[__name__])
+            try:
+                from tank_hybrid import HybridAgent
+                from tank_nn import MAP_SEED, MODEL, Network
+                from tankai import ACTIONS
+                if not MODEL.is_file():
+                    raise FileNotFoundError(MODEL)
+                self.hybrid_ai = HybridAgent(Network.load(MODEL), player_index=1)
+                self.strong_actions = ACTIONS
+                self.strong_maze = Maze(random.Random(MAP_SEED))
+            except (ImportError, FileNotFoundError, ValueError) as error:
+                self.menu_error = f'最强 AI 无法启动：{error}'
+                return
+        else:
+            self.hybrid_ai = None
+            self.strong_maze = None
+        self.menu_error = ''
         self.solo = solo
+        self.strong_ai = strong
         self.tanks = [Tank(pygame.Vector2(), 0, YELLOW, 'P1'),
-                      Tank(pygame.Vector2(), math.pi, BLUE, 'AI' if solo else 'P2')]
+                      Tank(pygame.Vector2(), math.pi, BLUE,
+                           '最强AI' if strong else 'AI' if solo else 'P2')]
         self.new_round()
 
     def new_round(self, maze=None, left=None, right=None):
-        self.maze = maze if maze is not None else Maze()
+        self.maze = maze if maze is not None else self.strong_maze if self.strong_ai else Maze()
+        if self.strong_ai and left is None and right is None:
+            cells = [(x, y) for y in range(ROWS) for x in range(COLS)]
+            while True:
+                left, right = random.sample(cells, 2)
+                if abs(left[0] - right[0]) + abs(left[1] - right[1]) >= 6:
+                    break
         left = left if left is not None else (1, random.randrange(ROWS))
         right = right if right is not None else (COLS - 2, random.randrange(ROWS))
         self.tanks[0].pos = cell_center(left)
@@ -265,6 +298,8 @@ class Game:
         self.message = ''
         self.mode = 'playing'
         self.ai_shoot_timer = 0
+        if self.hybrid_ai is not None:
+            self.hybrid_ai.reset()
 
     def shoot(self, index):
         tank = self.tanks[index]
@@ -310,7 +345,12 @@ class Game:
             return
         self.tanks[0].update(dt, int(keys[pygame.K_w]) - int(keys[pygame.K_s]),
                              int(keys[pygame.K_d]) - int(keys[pygame.K_a]), self.maze.walls)
-        if self.solo:
+        if self.strong_ai:
+            forward, turn, shoot = self.strong_actions[self.hybrid_ai.act(self, dt)]
+            self.tanks[1].update(dt, forward, turn, self.maze.walls)
+            if shoot:
+                self.shoot(1)
+        elif self.solo:
             self.ai_update(dt)
         else:
             self.tanks[1].update(dt, int(keys[pygame.K_UP]) - int(keys[pygame.K_DOWN]),
@@ -339,13 +379,18 @@ class Game:
     def draw(self):
         self.screen.fill(BG)
         if self.mode == 'menu':
-            self.label('坦克动荡', self.big, TEXT, (WIDTH // 2, 205))
-            pygame.draw.rect(self.screen, TEXT, (380, 407, 360, 62), 2)
-            self.label('1   单人对战 AI', self.font, TEXT, (WIDTH // 2, 438))
-            pygame.draw.rect(self.screen, TEXT, (380, 486, 360, 62), 2)
-            self.label('2   本地双人对战', self.font, TEXT, (WIDTH // 2, 517))
+            self.label('坦克动荡', self.big, TEXT, (WIDTH // 2, 165))
+            pygame.draw.rect(self.screen, TEXT, (380, 314, 360, 62), 2)
+            self.label('1   单人对战 AI', self.font, TEXT, (WIDTH // 2, 345))
+            pygame.draw.rect(self.screen, TEXT, (380, 393, 360, 62), 2)
+            self.label('2   本地双人对战', self.font, TEXT, (WIDTH // 2, 424))
+            pygame.draw.rect(self.screen, TEXT, (380, 472, 360, 62), 2)
+            self.label('3   挑战最强 AI', self.font, TEXT, (WIDTH // 2, 503))
             self.label('P1: W A S D 移动 · 空格射击    P2: 方向键移动 · 回车射击',
-                       self.small, MUTED, (WIDTH // 2, 616))
+                       self.small, MUTED, (WIDTH // 2, 603))
+            self.label('最强 AI 模式使用固定地图', self.small, MUTED, (WIDTH // 2, 643))
+            if self.menu_error:
+                self.label(self.menu_error, self.small, TEXT, (WIDTH // 2, 690))
         else:
             self.maze.draw(self.screen)
             for bullet in self.bullets:
@@ -380,6 +425,8 @@ class Game:
                             self.start(True)
                         elif event.key == pygame.K_2:
                             self.start(False)
+                        elif event.key == pygame.K_3:
+                            self.start(True, strong=True)
                         elif event.key == pygame.K_ESCAPE:
                             running = False
                     elif event.key == pygame.K_ESCAPE:
@@ -393,10 +440,12 @@ class Game:
                             self.mode = 'menu'
             if self.mode == 'menu' and pygame.mouse.get_pressed()[0]:
                 mx, my = pygame.mouse.get_pos()
-                if 380 <= mx <= 740 and 407 <= my <= 469:
+                if 380 <= mx <= 740 and 314 <= my <= 376:
                     self.start(True)
-                elif 380 <= mx <= 740 and 486 <= my <= 548:
+                elif 380 <= mx <= 740 and 393 <= my <= 455:
                     self.start(False)
+                elif 380 <= mx <= 740 and 472 <= my <= 534:
+                    self.start(True, strong=True)
             self.update(dt)
             self.draw()
         pygame.quit()

@@ -24,19 +24,20 @@ GAMMA = .98
 N_STEP = 3
 
 
-def observation(game):
+def observation(game, player_index=0):
     """Full map plus tank-relative enemy and distance-sorted bullet features."""
     values = []
     for y in range(ROWS):
         for x in range(COLS):
             opened = game.maze.openings[(x, y)]
             values.extend((float('E' in opened), float('S' in opened)))
-    for tank in game.tanks:
+    player = game.tanks[player_index]
+    enemy = game.tanks[1 - player_index]
+    for tank in (player, enemy):
         values.extend(((tank.pos.x - OX) / FIELD_W,
                        (tank.pos.y - OY) / FIELD_H,
                        np.cos(tank.angle), np.sin(tank.angle),
                        min(tank.cooldown / .34, 1.0)))
-    player, enemy = game.tanks
     forward = np.asarray((np.cos(player.angle), np.sin(player.angle)))
     side = np.asarray((-forward[1], forward[0]))
     offset = np.asarray(enemy.pos - player.pos)
@@ -53,7 +54,7 @@ def observation(game):
                        float(relative_pos @ side / FIELD_H),
                        float(velocity @ forward / 420),
                        float(velocity @ side / 420),
-                       1.0 if bullet.owner == 0 else -1.0, 1.0))
+                       1.0 if bullet.owner == player_index else -1.0, 1.0))
     values.extend([0.0] * (MAX_BULLETS - min(len(bullets), MAX_BULLETS)) * 6)
     return np.asarray(values, dtype=np.float32)
 
