@@ -9,8 +9,8 @@ from pathlib import Path
 import pygame
 
 from tank import COLS, ROWS, Game, Maze
-from tank_ai import ACTIONS, DodgeAttackAgent, PlannerAgent, StableDodgeAttackAgent, TankAI14
-from tank_dodge_walls import DodgeNetwork, MODEL
+from tank_ai import ACTIONS, DodgeAttackAgent, PlannerAgent, StableDodgeAttackAgent, TankAI15
+from tank_dodge_walls import DodgeNetwork, OLD_MODEL
 
 PHYSICS_DT = 1 / 60
 MAX_DECISIONS = 600
@@ -34,7 +34,7 @@ class DuelEnv:
         self.dodger = (PlannerAgent(agent_index) if planner_only else
                        DodgeAttackAgent(network, agent_index) if legacy else
                        StableDodgeAttackAgent(network, agent_index) if ai13 else
-                       TankAI14(network, agent_index))
+                       TankAI15(network, agent_index))
         self.opponent = PlannerAgent(1 - agent_index)
         self.controllers = [None, None]
         self.controllers[agent_index] = self.dodger
@@ -69,6 +69,7 @@ def evaluate(network, games=100, seed=2026, legacy=False, planner_only=False,
              ai13=False):
     totals = {'win': 0, 'loss': 0, 'draw': 0, 'rebound_deaths': 0,
               'self_hits': 0, 'rebound_kills': 0, 'self_threats': 0,
+              'crowd_entries': 0,
               'dodge_decisions': 0,
               'mode_switches': 0, 'movement_reversals': 0}
     for agent_index in (0, 1):
@@ -88,6 +89,7 @@ def evaluate(network, games=100, seed=2026, legacy=False, planner_only=False,
                     for key in ('dodge_decisions', 'mode_switches', 'movement_reversals'):
                         totals[key] += getattr(env.dodger, key, 0)
                     totals['self_threats'] += getattr(env.dodger, 'self_threats', 0)
+                    totals['crowd_entries'] += getattr(env.dodger, 'crowd_entries', 0)
                     break
     return totals
 
@@ -118,7 +120,7 @@ def main():
     parser = argparse.ArgumentParser(description='Evaluate the current dodge AI')
     parser.add_argument('--games', type=int, default=100, help='Games per seat')
     parser.add_argument('--seed', type=int, default=2026)
-    parser.add_argument('--model', type=Path, default=MODEL)
+    parser.add_argument('--model', type=Path, default=OLD_MODEL)
     parser.add_argument('--watch', action='store_true')
     parser.add_argument('--swap', action='store_true')
     mode = parser.add_mutually_exclusive_group()

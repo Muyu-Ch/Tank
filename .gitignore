@@ -13,4 +13,6 @@ tank_dodge_v2_best_latest.npz
 tank_dodge_real_best.npz
 tank_dodge_walls_best.npz
 tank_dodge_walls_best_latest.npz
+tank_dodge_dense_best.npz
+tank_dodge_dense_best_latest.npz
 tankai_qtable.json

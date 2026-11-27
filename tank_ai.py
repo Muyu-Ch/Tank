@@ -469,17 +469,19 @@ class TacticalPlannerAgent(PlannerAgent):
         return ACTIONS.index((forward, turn, False))
 
 
-class TankAI14(StableDodgeAttackAgent):
+class TankAI15(StableDodgeAttackAgent):
     """Tactical shooting with self-bullet aware predictive dodging."""
 
     def __init__(self, network, player_index, frame_fn=dodge_frame):
         super().__init__(network, player_index, frame_fn)
         self.planner = TacticalPlannerAgent(player_index)
         self.self_threats = 0
+        self.crowd_entries = 0
 
     def reset(self, game):
         super().reset(game)
         self.self_threats = 0
+        self.crowd_entries = 0
 
     def predicted_threats(self, game, forward, turn):
         player = game.tanks[self.player_index]
@@ -492,32 +494,117 @@ class TankAI14(StableDodgeAttackAgent):
         own_threats = []
         danger = False
         own_danger = False
+        paths = []
         for bullet in game.bullets:
             if bullet.pos.distance_to(player.pos) > 400:
                 continue
             projected = Bullet(bullet.pos.copy(), bullet.velocity.copy(), bullet.owner,
                                bullet.life, bullet.bounces, bullet.age)
             closest = 999.0
+            path = []
             for position in positions:
                 if not projected.update(1 / 60,
                                         wall_index.near(projected.pos)):
                     break
                 if bullet.owner == self.player_index and projected.age <= .42:
+                    path.append(None)
                     continue
+                path.append(projected.pos.copy())
                 closest = min(closest, projected.pos.distance_to(position))
+            paths.append((bullet, path))
             if closest < 48:
                 danger = True
                 if bullet.owner == self.player_index:
                     own_danger = True
             if bullet.owner == self.player_index and closest < 70:
                 own_threats.append(bullet)
-        return danger, own_threats, own_danger
+        crowds = []
+        for step in (5, 11, 17, 23, 29, 35):
+            approaching = []
+            for bullet, path in paths:
+                if len(path) <= step or path[step] is None:
+                    continue
+                future = path[step]
+                distance = future.distance_to(positions[step])
+                if (distance < 160 and
+                        distance < bullet.pos.distance_to(player.pos) - 12):
+                    approaching.append(future)
+            for i, first in enumerate(approaching):
+                group = [first] + [other for other in approaching[i + 1:]
+                                   if first.distance_to(other) < 160]
+                if len(group) >= 2:
+                    center = sum(group, pygame.Vector2()) / len(group)
+                    crowds.append((step, center, len(group)))
+                    break
+        return danger or bool(crowds), own_threats, own_danger, crowds
+
+    def crowd_values(self, game, values, crowds):
+        if not crowds:
+            return values
+        player = game.tanks[self.player_index]
+        wall_index = self.planner.wall_index
+        event_steps = {step for step, _, _ in crowds}
+        adjusted = values.copy()
+        for index, (forward, turn) in enumerate(DODGE_ACTIONS):
+            projected = Tank(player.pos.copy(), player.angle, player.color,
+                             player.name)
+            positions = {}
+            for step in range(max(event_steps) + 1):
+                projected.update(1 / 60, forward, turn,
+                                 wall_index.near(projected.pos))
+                if step in event_steps:
+                    positions[step] = projected.pos.copy()
+            score = 0.0
+            for step, center, count in crowds:
+                distance = positions[step].distance_to(center)
+                starting_distance = player.pos.distance_to(center)
+                weight = 1 - .4 * step / 36
+                score += weight * (min(distance, 220) - min(starting_distance, 220)) / 100
+                if distance < 90:
+                    score -= weight * (90 - distance) / 90
+            adjusted[index] += .45 * score / len(crowds)
+        return adjusted
+
+    def wall_trap_values(self, game, values):
+        player = game.tanks[self.player_index]
+        walls = self.local_walls(game.maze.walls, player.pos, 95)
+        if not walls:
+            return values
+
+        def clearance(position):
+            return min(math.hypot(max(wall.left - position.x, 0,
+                                      position.x - wall.right),
+                                  max(wall.top - position.y, 0,
+                                      position.y - wall.bottom))
+                       for wall in walls)
+
+        start = clearance(player.pos)
+        if start > 80:
+            return values
+        adjusted = values.copy()
+        for index, (forward, turn) in enumerate(DODGE_ACTIONS):
+            if not forward:
+                continue
+            projected = Tank(player.pos.copy(), player.angle, player.color,
+                             player.name)
+            for _ in range(10):
+                projected.update(1 / 60, forward, turn, walls)
+            end = clearance(projected.pos)
+            travel = projected.pos.distance_to(player.pos)
+            if travel < 3:
+                adjusted[index] -= .7
+            if end < start - 5 and end < 55:
+                adjusted[index] -= .15 + .3 * (start - end) / 55
+        return adjusted
 
     def act(self, game, dt=DT):
         forward, turn, shoot = ACTIONS[self.planner.act(game, dt)]
-        danger, own_threats, own_danger = self.predicted_threats(game, forward, turn)
+        danger, own_threats, own_danger, crowds = self.predicted_threats(
+            game, forward, turn)
         if own_danger and not self.dodging:
             self.self_threats += 1
+        if crowds and not self.dodging:
+            self.crowd_entries += 1
         observed = [bullet for bullet in game.bullets
                     if bullet.owner != self.player_index or bullet in own_threats]
         current = self.frame_fn(game.tanks[self.player_index], game.maze.walls, observed)
@@ -536,6 +623,8 @@ class TankAI14(StableDodgeAttackAgent):
             values = self.network.predict(state[None, :])[0]
             raw_index = int(np.argmax(values))
             values = self.safe_values(game, values)
+            values = self.crowd_values(game, values, crowds)
+            values = self.wall_trap_values(game, values)
             index = int(np.argmax(values))
             if (self.last_dodge_action is not None and
                     values[self.last_dodge_action] >= values[index] - self.q_margin):
