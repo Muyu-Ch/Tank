@@ -96,7 +96,9 @@ class Maze:
         offsets = {'E': (1, 0), 'W': (-1, 0), 'S': (0, 1), 'N': (0, -1)}
         while queue:
             here = queue.popleft()
-            for direction in self.openings[here]:
+            for direction in ('E', 'W', 'S', 'N'):
+                if direction not in self.openings[here]:
+                    continue
                 dx, dy = offsets[direction]
                 nxt = (here[0] + dx, here[1] + dy)
                 if nxt not in parent:
@@ -230,6 +232,7 @@ class Game:
         self.round_delay = 0
         self.message = ''
         self.ai_shoot_timer = 0
+        self.last_hit = None
 
     @staticmethod
     def load_font(size):
@@ -255,15 +258,16 @@ class Game:
             # existing Game and Tank classes rather than import a second copy.
             sys.modules.setdefault('tank', sys.modules[__name__])
             try:
-                from tank_hybrid import DodgeAttackAgent
-                from tank_dodge import MODEL, DodgeNetwork
-                from tankai import ACTIONS
+                from tank_dodge_walls import MODEL, DodgeNetwork, dodge_frame
+                from tank_ai import ACTIONS, StableDodgeAttackAgent
                 if not MODEL.is_file():
                     raise FileNotFoundError(MODEL)
-                self.hybrid_ai = DodgeAttackAgent(DodgeNetwork.load(MODEL), player_index=1)
+                self.hybrid_ai = StableDodgeAttackAgent(
+                    DodgeNetwork.load(MODEL), player_index=1,
+                    frame_fn=dodge_frame, safety_filter=True)
                 self.strong_actions = ACTIONS
             except (ImportError, FileNotFoundError, ValueError) as error:
-                self.menu_error = f'AI 1.2 无法启动：{error}'
+                self.menu_error = f'AI 1.3 无法启动：{error}'
                 return
         else:
             self.hybrid_ai = None
@@ -272,7 +276,7 @@ class Game:
         self.strong_ai = strong
         self.tanks = [Tank(pygame.Vector2(), 0, YELLOW, 'P1'),
                       Tank(pygame.Vector2(), math.pi, BLUE,
-                           'AI 1.2' if strong else 'AI' if solo else 'P2')]
+                           'AI 1.3' if strong else 'AI' if solo else 'P2')]
         self.new_round()
 
     def new_round(self, maze=None, left=None, right=None):
@@ -299,6 +303,7 @@ class Game:
         self.ai_shoot_timer = 0
         self.ai_decision_clock = 0.0
         self.ai_decision = (0, 0, False)
+        self.last_hit = None
         if self.hybrid_ai is not None:
             self.hybrid_ai.reset(self)
 
@@ -335,6 +340,33 @@ class Game:
                 self.shoot(1)
                 self.ai_shoot_timer = .8
 
+    def advance_bullets(self, dt):
+        """Apply the same bullet and hit rules in the game and headless training."""
+        self.last_hit = None
+        for bullet in self.bullets[:]:
+            if not bullet.update(dt, self.maze.walls):
+                self.bullets.remove(bullet)
+                continue
+            for index, tank in enumerate(self.tanks):
+                if tank.alive and (index != bullet.owner or bullet.age > .42) and tank.pos.distance_to(bullet.pos) < 20:
+                    tank.alive = False
+                    self.last_hit = (index, bullet.owner, bullet.bounces)
+                    self.tanks[1 - index].score += 1
+                    self.message = f'{self.tanks[1 - index].name}  得分！'
+                    self.round_delay = 2.0
+                    self.bullets.clear()
+                    return self.last_hit
+        return None
+
+    def step_actions(self, actions, dt):
+        """Advance one physics frame from two (forward, turn, shoot) actions."""
+        for tank, (forward, turn, _) in zip(self.tanks, actions):
+            tank.update(dt, forward, turn, self.maze.walls)
+        for index, (_, _, shoot) in enumerate(actions):
+            if shoot:
+                self.shoot(index)
+        return self.advance_bullets(dt)
+
     def update(self, dt):
         if self.mode != 'playing':
             return
@@ -344,38 +376,26 @@ class Game:
             if self.round_delay <= 0:
                 self.new_round()
             return
-        self.tanks[0].update(dt, int(keys[pygame.K_w]) - int(keys[pygame.K_s]),
-                             int(keys[pygame.K_d]) - int(keys[pygame.K_a]), self.maze.walls)
+        player_action = (int(keys[pygame.K_w]) - int(keys[pygame.K_s]),
+                         int(keys[pygame.K_d]) - int(keys[pygame.K_a]),
+                         bool(keys[pygame.K_SPACE]))
         if self.strong_ai:
             self.ai_decision_clock += dt
             if self.ai_decision_clock >= 1 / 30:
                 self.ai_decision_clock -= 1 / 30
                 self.ai_decision = self.strong_actions[self.hybrid_ai.act(self, 1 / 30)]
-            forward, turn, shoot = self.ai_decision
-            self.tanks[1].update(dt, forward, turn, self.maze.walls)
-            if shoot:
-                self.shoot(1)
+            self.step_actions((player_action, self.ai_decision), dt)
         elif self.solo:
+            self.tanks[0].update(dt, player_action[0], player_action[1], self.maze.walls)
             self.ai_update(dt)
+            if player_action[2]:
+                self.shoot(0)
+            self.advance_bullets(dt)
         else:
-            self.tanks[1].update(dt, int(keys[pygame.K_UP]) - int(keys[pygame.K_DOWN]),
-                                 int(keys[pygame.K_RIGHT]) - int(keys[pygame.K_LEFT]), self.maze.walls)
-        if keys[pygame.K_SPACE]:
-            self.shoot(0)
-        if not self.solo and (keys[pygame.K_RETURN] or keys[pygame.K_KP_ENTER]):
-            self.shoot(1)
-        for bullet in self.bullets[:]:
-            if not bullet.update(dt, self.maze.walls):
-                self.bullets.remove(bullet)
-                continue
-            for index, tank in enumerate(self.tanks):
-                if tank.alive and (index != bullet.owner or bullet.age > .42) and tank.pos.distance_to(bullet.pos) < 20:
-                    tank.alive = False
-                    self.tanks[1 - index].score += 1
-                    self.message = f'{self.tanks[1 - index].name}  得分！'
-                    self.round_delay = 2.0
-                    self.bullets.clear()
-                    return
+            second_action = (int(keys[pygame.K_UP]) - int(keys[pygame.K_DOWN]),
+                             int(keys[pygame.K_RIGHT]) - int(keys[pygame.K_LEFT]),
+                             bool(keys[pygame.K_RETURN] or keys[pygame.K_KP_ENTER]))
+            self.step_actions((player_action, second_action), dt)
 
     def label(self, text, font, color, center):
         surface = font.render(text, True, color)
@@ -390,10 +410,10 @@ class Game:
             pygame.draw.rect(self.screen, TEXT, (380, 393, 360, 62), 2)
             self.label('2   本地双人对战', self.font, TEXT, (WIDTH // 2, 424))
             pygame.draw.rect(self.screen, TEXT, (380, 472, 360, 62), 2)
-            self.label('3   挑战 AI 1.2', self.font, TEXT, (WIDTH // 2, 503))
+            self.label('3   挑战 AI 1.3', self.font, TEXT, (WIDTH // 2, 503))
             self.label('P1: W A S D 移动 · 空格射击    P2: 方向键移动 · 回车射击',
                        self.small, MUTED, (WIDTH // 2, 603))
-            self.label('AI 1.2 模式每局生成随机地图', self.small, MUTED, (WIDTH // 2, 643))
+            self.label('AI 1.3 模式每局生成随机地图', self.small, MUTED, (WIDTH // 2, 643))
             if self.menu_error:
                 self.label(self.menu_error, self.small, TEXT, (WIDTH // 2, 690))
         else:
