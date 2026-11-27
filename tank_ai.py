@@ -1,19 +1,87 @@
-"""AI 1.5: tactical shooting and neural dodging for the current game."""
+"""Manstein: tactical shooting, neural dodging, and fire-pressure navigation."""
 from __future__ import annotations
 
 import math
+from collections import deque
+from pathlib import Path
 
 import numpy as np
 import pygame
 
-from tank import COLS, ROWS, Bullet, Tank, cell_center, grid_cell, hits_wall, unit
-from tank_dodge_walls import ACTIONS as DODGE_ACTIONS, dodge_frame
+from tank import CELL, COLS, ROWS, Bullet, Tank, cell_center, grid_cell, hits_wall, unit
 
 DT = 1 / 30
+MODEL_PATH = Path(__file__).with_name('manstein.npz')
+WALL_RADIUS = 220
+BULLET_RADIUS = 210
+WALL_SLOTS = 24
+BULLET_SLOTS = 6
+FRAME_SIZE = 2 + WALL_SLOTS * 5 + BULLET_SLOTS * 6
+INPUT_SIZE = FRAME_SIZE * 2
+DODGE_ACTIONS = [(forward, turn)
+                 for forward in (-1, 0, 1) for turn in (-1, 0, 1)]
 ACTIONS = [(forward, turn, shoot)
            for forward in (-1, 0, 1)
            for turn in (-1, 0, 1)
            for shoot in (False, True)]
+
+
+def dodge_frame(tank, walls, bullets):
+    """Encode the visible wall rectangles and nearest bullets for the model."""
+    x, y = tank.pos
+    local_box = pygame.Rect(x - WALL_RADIUS, y - WALL_RADIUS,
+                            2 * WALL_RADIUS, 2 * WALL_RADIUS)
+    visible = [wall.clip(local_box) for wall in walls if wall.colliderect(local_box)]
+    visible.sort(key=lambda wall: (max(wall.left - x, 0, x - wall.right) ** 2 +
+                                   max(wall.top - y, 0, y - wall.bottom) ** 2,
+                                   wall.left, wall.top, wall.right, wall.bottom))
+    features = [math.sin(tank.angle), math.cos(tank.angle)]
+    for wall in visible[:WALL_SLOTS]:
+        features.extend(((wall.left - x) / WALL_RADIUS,
+                         (wall.top - y) / WALL_RADIUS,
+                         (wall.right - x) / WALL_RADIUS,
+                         (wall.bottom - y) / WALL_RADIUS, 1.0))
+    features.extend([0.0] * (WALL_SLOTS - min(len(visible), WALL_SLOTS)) * 5)
+    nearest = sorted(bullets, key=lambda bullet: tank.pos.distance_squared_to(bullet.pos))
+    forward = unit(tank.angle)
+    side = pygame.Vector2(-forward.y, forward.x)
+    for bullet in nearest[:BULLET_SLOTS]:
+        delta = bullet.pos - tank.pos
+        angle = math.atan2(delta.y, delta.x) - tank.angle
+        features.extend((min(delta.length() / BULLET_RADIUS, 1.0),
+                         math.sin(angle), math.cos(angle),
+                         bullet.velocity.dot(forward) / 440,
+                         bullet.velocity.dot(side) / 440, 1.0))
+    features.extend([0.0] * (BULLET_SLOTS - min(len(nearest), BULLET_SLOTS)) * 6)
+    return np.asarray(features, dtype=np.float32)
+
+
+class DodgeNetwork:
+    """Inference-only loader for Manstein's trained dodge model."""
+
+    def __init__(self, weights, biases):
+        self.weights = weights
+        self.biases = biases
+
+    @classmethod
+    def load(cls, path=MODEL_PATH):
+        with np.load(path, allow_pickle=False) as data:
+            if int(data['input_size']) != INPUT_SIZE:
+                raise ValueError('闪避模型输入维度不匹配')
+            weights = [data[f'w{i}'].astype(np.float32) for i in range(3)]
+            biases = [data[f'b{i}'].astype(np.float32) for i in range(3)]
+        sizes = [INPUT_SIZE, weights[0].shape[1], weights[1].shape[1],
+                 len(DODGE_ACTIONS)]
+        for i, (weight, bias) in enumerate(zip(weights, biases)):
+            if weight.shape != (sizes[i], sizes[i + 1]) or bias.shape != (sizes[i + 1],):
+                raise ValueError('闪避模型参数维度不匹配')
+        return cls(weights, biases)
+
+    def predict(self, states):
+        hidden = states
+        for weight, bias in zip(self.weights[:-1], self.biases[:-1]):
+            hidden = np.maximum(hidden @ weight + bias, 0)
+        return hidden @ self.weights[-1] + self.biases[-1]
 
 
 class WallIndex:
@@ -46,6 +114,7 @@ class AttackPlanner:
         self.planned_from = None
         self.planned_enemy = None
         self.cell_cache = {}
+        self.route_cache = {}
         self.wall_index = None
         self.indexed_maze = None
         self.search_key = None
@@ -61,6 +130,7 @@ class AttackPlanner:
         self.planned_from = None
         self.planned_enemy = None
         self.cell_cache = {}
+        self.route_cache = {}
         self.wall_index = None
         self.indexed_maze = None
         self.search_key = None
@@ -138,11 +208,16 @@ class AttackPlanner:
 
     def firing_candidates(self, game, player, enemy):
         here = grid_cell(player.pos)
+        if here not in self.route_cache:
+            self.route_cache[here] = {
+                (x, y): game.maze.route(here, (x, y))
+                for y in range(ROWS) for x in range(COLS)
+            }
         candidates = []
         for y in range(ROWS):
             for x in range(COLS):
                 cell = (x, y)
-                route = game.maze.route(here, cell)
+                route = self.route_cache[here][cell]
                 steps = len(route) - 1
                 if steps > 5:
                     continue
@@ -188,6 +263,7 @@ class AttackPlanner:
             self.wall_index = WallIndex(game.maze.walls)
             self.indexed_maze = game.maze
             self.search_key = None
+            self.route_cache = {}
         if (self.plan_clock <= 0 or self.planned_from is None or
                 player.pos.distance_to(self.planned_from) > 24 or
                 enemy.pos.distance_to(self.planned_enemy) > 24):
@@ -225,14 +301,199 @@ class AttackPlanner:
         return ACTIONS.index((forward, turn, False))
 
 
-class TankAI15:
+class FirePressureNavigator:
+    """Choose an open route before an approaching volley reaches the tank."""
+
+    def __init__(self, player_index):
+        self.player_index = player_index
+        self.reset()
+
+    def reset(self):
+        self.target = None
+        self.pressure_center = None
+        self.scan_cooldown = 0
+        self.active_steps = 0
+        self.target_hold = 0
+        self.entries = 0
+
+    def projected_fire(self, game, wall_index):
+        player = game.tanks[self.player_index]
+        candidates = []
+        paths = []
+        for bullet in game.bullets:
+            initial = bullet.pos.distance_to(player.pos)
+            if initial > 620 or (bullet.owner == self.player_index and
+                                 bullet.age + 1.2 <= .42):
+                continue
+            projected = Bullet(bullet.pos.copy(), bullet.velocity.copy(), bullet.owner,
+                               bullet.life, bullet.bounces, bullet.age)
+            path = []
+            for _ in range(72):
+                if not projected.update(1 / 60, wall_index.near(projected.pos)):
+                    break
+                path.append(None if bullet.owner == self.player_index and
+                            projected.age <= .42 else projected.pos.copy())
+            paths.append(path)
+            distances = [(step, point.distance_to(player.pos))
+                         for step, point in enumerate(path) if point is not None]
+            if not distances:
+                continue
+            closest = min(distance for _, distance in distances)
+            if closest > 245 or initial - closest < 40:
+                continue
+            entry = next((step for step, distance in distances if distance < 260), None)
+            if entry is not None:
+                candidates.append((entry, path[entry]))
+        best = None
+        for entry, point in candidates:
+            group = [(other_entry, other_point)
+                     for other_entry, other_point in candidates
+                     if abs(entry - other_entry) <= 24 and
+                     point.distance_to(other_point) < 230]
+            if len(group) < 2:
+                continue
+            center = sum((position for _, position in group), pygame.Vector2()) / len(group)
+            rank = len(group) / (12 + sum(step for step, _ in group) / len(group))
+            if best is None or rank > best[0]:
+                best = (rank, center)
+        return (best[1] if best else None), paths
+
+    @staticmethod
+    def routes(maze, start):
+        directions = {'E': (1, 0), 'W': (-1, 0),
+                      'S': (0, 1), 'N': (0, -1)}
+        routes = {start: (start,)}
+        queue = deque([start])
+        while queue:
+            here = queue.popleft()
+            if len(routes[here]) > 3:
+                continue
+            for direction in maze.openings[here]:
+                dx, dy = directions[direction]
+                next_cell = (here[0] + dx, here[1] + dy)
+                if next_cell not in routes:
+                    routes[next_cell] = routes[here] + (next_cell,)
+                    queue.append(next_cell)
+        return routes
+
+    @staticmethod
+    def route_risk(route, paths):
+        risk = 0.0
+        for hop, cell in enumerate(route[1:], 1):
+            center = cell_center(cell)
+            arrival = min(71, round((.18 + hop * CELL / 185) * 60))
+            for path in paths:
+                for step in (arrival - 6, arrival, arrival + 6):
+                    if 0 <= step < len(path) and path[step] is not None:
+                        distance = path[step].distance_to(center)
+                        if distance < 85:
+                            risk += (85 - distance) / 85 * 1.8
+        return risk
+
+    def choose_target(self, game, source, paths):
+        player = game.tanks[self.player_index]
+        enemy = game.tanks[1 - self.player_index]
+        away = player.pos - source
+        if away.length_squared() < 1:
+            return None
+        away = away.normalize()
+        routes = self.routes(game.maze, grid_cell(player.pos))
+        scored = []
+        for cell, route in routes.items():
+            if len(route) == 1:
+                continue
+            position = cell_center(cell)
+            degree = len(game.maze.openings[cell])
+            displacement = (position - player.pos).dot(away) / CELL
+            score = (1.35 * min(displacement, 2.5) - .28 * (len(route) - 1) +
+                     .45 * (degree - 2) - self.route_risk(route, paths))
+            if degree <= 1:
+                score -= 1.6
+            enemy_distance = position.distance_to(enemy.pos)
+            if enemy_distance < 130:
+                score -= .6
+            elif enemy_distance > 440:
+                score -= .15 * (enemy_distance - 440) / CELL
+            scored.append((score, cell))
+        if not scored:
+            return None
+        score, cell = max(scored)
+        if self.target in routes:
+            old_score = next((value for value, candidate in scored
+                              if candidate == self.target), -math.inf)
+            if self.target_hold > 0 and old_score >= score - .8:
+                return self.target
+        return cell if score > -.5 else None
+
+    def update(self, game, wall_index):
+        self.scan_cooldown -= 1
+        self.target_hold = max(0, self.target_hold - 1)
+        self.active_steps = max(0, self.active_steps - 1)
+        if self.scan_cooldown <= 0:
+            self.scan_cooldown = 6
+            source, paths = self.projected_fire(game, wall_index)
+            if source is not None:
+                target = self.choose_target(game, source, paths)
+                if target is not None:
+                    if self.active_steps == 0:
+                        self.entries += 1
+                    if target != self.target:
+                        self.target_hold = 18
+                    self.target = target
+                    self.pressure_center = source
+                    self.active_steps = 24
+        if self.active_steps == 0:
+            self.target = None
+            self.pressure_center = None
+        return self.waypoint(game)
+
+    def waypoint(self, game):
+        if self.target is None:
+            return None
+        player = game.tanks[self.player_index]
+        route = game.maze.route(grid_cell(player.pos), self.target)
+        if len(route) == 1:
+            return cell_center(self.target)
+        return cell_center(route[1])
+
+    @staticmethod
+    def move_toward(player, waypoint):
+        direction = waypoint - player.pos
+        difference = (math.atan2(direction.y, direction.x) - player.angle +
+                      math.pi) % (2 * math.pi) - math.pi
+        turn = 0 if abs(difference) < .05 else (1 if difference > 0 else -1)
+        forward = 1 if abs(difference) < .85 and direction.length() > 14 else 0
+        return forward, turn
+
+    def guide_dodge(self, game, values, waypoint, wall_index):
+        if waypoint is None:
+            return values
+        player = game.tanks[self.player_index]
+        initial_distance = player.pos.distance_to(waypoint)
+        adjusted = values.copy()
+        for index, (forward, turn) in enumerate(DODGE_ACTIONS):
+            projected = Tank(player.pos.copy(), player.angle, player.color, player.name)
+            for _ in range(12):
+                projected.update(1 / 60, forward, turn, wall_index.near(projected.pos))
+            progress = (initial_distance - projected.pos.distance_to(waypoint)) / 25
+            direction = waypoint - projected.pos
+            alignment = (unit(projected.angle).dot(direction.normalize())
+                         if direction.length_squared() > 1 else 1.0)
+            adjusted[index] += .45 * max(-1, min(1, progress)) + .12 * alignment
+        return adjusted
+
+
+class MansteinAI:
     """Tactical shooting with self-bullet aware predictive dodging."""
 
-    def __init__(self, network, player_index, frame_fn=dodge_frame):
+    def __init__(self, network, player_index, frame_fn=dodge_frame,
+                 pressure_navigation=True):
         self.network = network
         self.player_index = player_index
         self.frame_fn = frame_fn
         self.planner = AttackPlanner(player_index)
+        self.pressure = (FirePressureNavigator(player_index)
+                         if pressure_navigation else None)
         self.min_dodge_steps = 12
         self.clear_steps = 4
         self.q_margin = .08
@@ -240,6 +501,8 @@ class TankAI15:
 
     def reset(self, game):
         self.planner.reset()
+        if self.pressure is not None:
+            self.pressure.reset()
         self.reset_state()
         self.previous = self.frame_fn(game.tanks[self.player_index],
                                       game.maze.walls, [])
@@ -264,39 +527,44 @@ class TankAI15:
 
     def safe_values(self, game, values):
         player = game.tanks[self.player_index]
-        walls = game.maze.walls
+        wall_index = self.planner.wall_index
         nearby = [bullet for bullet in game.bullets
-                  if bullet.pos.distance_squared_to(player.pos) < 250 ** 2 and
-                  (bullet.owner != self.player_index or bullet.age + 8 * DT > .42)]
+                  if bullet.pos.distance_squared_to(player.pos) < 350 ** 2 and
+                  (bullet.owner != self.player_index or bullet.age + 24 / 60 > .42)]
         if not nearby:
             return values
         trajectories = []
         for bullet in nearby:
             projected = Bullet(bullet.pos.copy(), bullet.velocity.copy(), bullet.owner,
                                bullet.life, bullet.bounces, bullet.age)
-            bullet_walls = self.local_walls(walls, bullet.pos,
-                                           bullet.velocity.length() * 8 * DT)
             path = []
-            for _ in range(8):
-                if not projected.update(DT, bullet_walls):
+            for _ in range(24):
+                if not projected.update(1 / 60,
+                                        wall_index.near(projected.pos)):
                     break
                 path.append((projected.pos.copy(),
                              projected.owner != self.player_index or projected.age > .42))
             trajectories.append(path)
         adjusted = values.copy()
-        tank_walls = self.local_walls(walls, player.pos, 185 * 8 * DT)
         for index, (forward, turn) in enumerate(DODGE_ACTIONS):
             projected_tank = Tank(player.pos.copy(), player.angle, player.color, player.name)
-            closest = 250.0
-            for step in range(8):
-                projected_tank.update(DT, forward, turn, tank_walls)
+            closest = 350.0
+            collision_step = None
+            for step in range(24):
+                projected_tank.update(1 / 60, forward, turn,
+                                      wall_index.near(projected_tank.pos))
                 for path in trajectories:
                     if step < len(path) and path[step][1]:
-                        closest = min(closest, projected_tank.pos.distance_to(path[step][0]))
-            if closest < 24:
-                adjusted[index] -= 5.0
+                        distance = projected_tank.pos.distance_to(path[step][0])
+                        closest = min(closest, distance)
+                        if distance < 22 and collision_step is None:
+                            collision_step = step
+                if collision_step is not None:
+                    break
+            if collision_step is not None:
+                adjusted[index] -= 5.0 - 2.0 * collision_step / 24
             elif closest < 50:
-                adjusted[index] -= (50 - closest) / 26 * .4
+                adjusted[index] -= (50 - closest) / 28 * .4
         return adjusted
 
     def predicted_threats(self, game, forward, turn):
@@ -415,6 +683,15 @@ class TankAI15:
 
     def act(self, game, dt=DT):
         forward, turn, shoot = ACTIONS[self.planner.act(game, dt)]
+        planned_shot = shoot
+        waypoint = (self.pressure.update(game, self.planner.wall_index)
+                    if self.pressure is not None else None)
+        if waypoint is not None:
+            forward, turn = self.pressure.move_toward(
+                game.tanks[self.player_index], waypoint)
+            shoot = shoot and turn == 0
+            if planned_shot and not shoot:
+                self.planner.shot_timer = 0.0
         danger, own_threats, own_danger, crowds = self.predicted_threats(
             game, forward, turn)
         if own_danger and not self.dodging:
@@ -441,6 +718,9 @@ class TankAI15:
             values = self.safe_values(game, values)
             values = self.crowd_values(game, values, crowds)
             values = self.wall_trap_values(game, values)
+            if waypoint is not None:
+                values = self.pressure.guide_dodge(
+                    game, values, waypoint, self.planner.wall_index)
             index = int(np.argmax(values))
             if (self.last_dodge_action is not None and
                     values[self.last_dodge_action] >= values[index] - self.q_margin):

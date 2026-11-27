@@ -172,7 +172,8 @@ class Tank:
         pygame.draw.polygon(screen, TEXT, barrel, 2)
         pygame.draw.polygon(screen, self.color, body)
         pygame.draw.polygon(screen, TEXT, body, 2)
-        pygame.draw.circle(screen, TEXT, center, 8)
+        pygame.draw.circle(screen, BG if self.color == TEXT else TEXT,
+                           center, 8)
         pygame.draw.circle(screen, self.color, center, 5)
 
 
@@ -256,23 +257,21 @@ class Game:
             # existing Game and Tank classes rather than import a second copy.
             sys.modules.setdefault('tank', sys.modules[__name__])
             try:
-                from tank_dodge_walls import AI15_MODEL, DodgeNetwork, dodge_frame
-                from tank_ai import ACTIONS, TankAI15
-                if not AI15_MODEL.is_file():
-                    raise FileNotFoundError(AI15_MODEL)
-                self.ai_agent = TankAI15(DodgeNetwork.load(AI15_MODEL),
-                                         player_index=1, frame_fn=dodge_frame)
+                from tank_ai import ACTIONS, MODEL_PATH, DodgeNetwork, MansteinAI
+                if not MODEL_PATH.is_file():
+                    raise FileNotFoundError(MODEL_PATH)
+                self.ai_agent = MansteinAI(DodgeNetwork.load(), player_index=1)
                 self.ai_actions = ACTIONS
             except (ImportError, FileNotFoundError, ValueError) as error:
-                self.menu_error = f'AI 1.5 无法启动：{error}'
+                self.menu_error = f'曼施坦因无法启动：{error}'
                 return
         else:
             self.ai_agent = None
         self.menu_error = ''
         self.solo = solo
         self.tanks = [Tank(pygame.Vector2(), 0, YELLOW, 'P1'),
-                      Tank(pygame.Vector2(), math.pi, BLUE,
-                           'AI 1.5' if solo else 'P2')]
+                      Tank(pygame.Vector2(), math.pi, TEXT if solo else BLUE,
+                           '曼施坦因' if solo else 'P2')]
         self.new_round()
 
     def new_round(self, maze=None, left=None, right=None):
@@ -372,7 +371,7 @@ class Game:
         if self.mode == 'menu':
             self.label('坦克动荡', self.big, TEXT, (WIDTH // 2, 165))
             pygame.draw.rect(self.screen, TEXT, (380, 314, 360, 62), 2)
-            self.label('1   单人对战 AI 1.5', self.font, TEXT, (WIDTH // 2, 345))
+            self.label('1   单人对战 曼施坦因', self.font, TEXT, (WIDTH // 2, 345))
             pygame.draw.rect(self.screen, TEXT, (380, 393, 360, 62), 2)
             self.label('2   本地双人对战', self.font, TEXT, (WIDTH // 2, 424))
             self.label('P1: W A S D 移动 · 空格射击    P2: 方向键移动 · 回车射击',
