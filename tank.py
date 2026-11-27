@@ -221,8 +221,7 @@ class Game:
         self.big = self.load_font(58)
         self.mode = 'menu'
         self.solo = False
-        self.strong_ai = False
-        self.hybrid_ai = None
+        self.ai_agent = None
         self.ai_decision_clock = 0.0
         self.ai_decision = (0, 0, False)
         self.menu_error = ''
@@ -231,7 +230,6 @@ class Game:
         self.bullets = []
         self.round_delay = 0
         self.message = ''
-        self.ai_shoot_timer = 0
         self.last_hit = None
 
     @staticmethod
@@ -252,35 +250,34 @@ class Game:
                 return pygame.font.Font(path, size)
         return pygame.font.SysFont(None, size)
 
-    def start(self, solo, strong=False):
-        if strong:
+    def start(self, solo):
+        if solo:
             # When this file is run directly, the AI modules should reuse its
             # existing Game and Tank classes rather than import a second copy.
             sys.modules.setdefault('tank', sys.modules[__name__])
             try:
-                from tank_dodge_walls import OLD_MODEL, DodgeNetwork, dodge_frame
+                from tank_dodge_walls import AI15_MODEL, DodgeNetwork, dodge_frame
                 from tank_ai import ACTIONS, TankAI15
-                if not OLD_MODEL.is_file():
-                    raise FileNotFoundError(OLD_MODEL)
-                self.hybrid_ai = TankAI15(DodgeNetwork.load(OLD_MODEL),
-                                          player_index=1, frame_fn=dodge_frame)
-                self.strong_actions = ACTIONS
+                if not AI15_MODEL.is_file():
+                    raise FileNotFoundError(AI15_MODEL)
+                self.ai_agent = TankAI15(DodgeNetwork.load(AI15_MODEL),
+                                         player_index=1, frame_fn=dodge_frame)
+                self.ai_actions = ACTIONS
             except (ImportError, FileNotFoundError, ValueError) as error:
                 self.menu_error = f'AI 1.5 无法启动：{error}'
                 return
         else:
-            self.hybrid_ai = None
+            self.ai_agent = None
         self.menu_error = ''
         self.solo = solo
-        self.strong_ai = strong
         self.tanks = [Tank(pygame.Vector2(), 0, YELLOW, 'P1'),
                       Tank(pygame.Vector2(), math.pi, BLUE,
-                           'AI 1.5' if strong else 'AI' if solo else 'P2')]
+                           'AI 1.5' if solo else 'P2')]
         self.new_round()
 
     def new_round(self, maze=None, left=None, right=None):
         self.maze = maze if maze is not None else Maze()
-        if self.strong_ai and left is None and right is None:
+        if self.solo and left is None and right is None:
             cells = [(x, y) for y in range(ROWS) for x in range(COLS)]
             while True:
                 left, right = random.sample(cells, 2)
@@ -299,12 +296,11 @@ class Game:
         self.round_delay = 0
         self.message = ''
         self.mode = 'playing'
-        self.ai_shoot_timer = 0
         self.ai_decision_clock = 0.0
         self.ai_decision = (0, 0, False)
         self.last_hit = None
-        if self.hybrid_ai is not None:
-            self.hybrid_ai.reset(self)
+        if self.ai_agent is not None:
+            self.ai_agent.reset(self)
 
     def shoot(self, index):
         tank = self.tanks[index]
@@ -315,29 +311,6 @@ class Game:
         if not hits_wall(muzzle, 5, self.maze.walls):
             self.bullets.append(Bullet(muzzle, direction * 420, index))
             tank.cooldown = .34
-
-    def ai_update(self, dt):
-        ai, target = self.tanks[1], self.tanks[0]
-        route = self.maze.route(grid_cell(ai.pos), grid_cell(target.pos))
-        destination = cell_center(route[1] if len(route) > 1 else route[0])
-        if len(route) <= 2:
-            destination = target.pos
-        vector = destination - ai.pos
-        desired = math.atan2(vector.y, vector.x)
-        difference = (desired - ai.angle + math.pi) % (2 * math.pi) - math.pi
-        turn = clamp(difference * 3, -1, 1)
-        forward = 1 if abs(difference) < .85 else 0
-        ai.update(dt, forward, turn, self.maze.walls)
-        self.ai_shoot_timer -= dt
-        toward_player = target.pos - ai.pos
-        aim_difference = (math.atan2(toward_player.y, toward_player.x) - ai.angle + math.pi) % (2 * math.pi) - math.pi
-        if abs(aim_difference) < .22 and self.ai_shoot_timer <= 0:
-            # Ray sample ensures the AI fires only along a clear corridor.
-            clear = all(not hits_wall(ai.pos + toward_player * (i / 24), 5, self.maze.walls)
-                        for i in range(2, 24))
-            if clear:
-                self.shoot(1)
-                self.ai_shoot_timer = .8
 
     def advance_bullets(self, dt):
         """Apply the same bullet and hit rules in the game and headless training."""
@@ -378,18 +351,12 @@ class Game:
         player_action = (int(keys[pygame.K_w]) - int(keys[pygame.K_s]),
                          int(keys[pygame.K_d]) - int(keys[pygame.K_a]),
                          bool(keys[pygame.K_SPACE]))
-        if self.strong_ai:
+        if self.solo:
             self.ai_decision_clock += dt
             if self.ai_decision_clock >= 1 / 30:
                 self.ai_decision_clock -= 1 / 30
-                self.ai_decision = self.strong_actions[self.hybrid_ai.act(self, 1 / 30)]
+                self.ai_decision = self.ai_actions[self.ai_agent.act(self, 1 / 30)]
             self.step_actions((player_action, self.ai_decision), dt)
-        elif self.solo:
-            self.tanks[0].update(dt, player_action[0], player_action[1], self.maze.walls)
-            self.ai_update(dt)
-            if player_action[2]:
-                self.shoot(0)
-            self.advance_bullets(dt)
         else:
             second_action = (int(keys[pygame.K_UP]) - int(keys[pygame.K_DOWN]),
                              int(keys[pygame.K_RIGHT]) - int(keys[pygame.K_LEFT]),
@@ -405,14 +372,12 @@ class Game:
         if self.mode == 'menu':
             self.label('坦克动荡', self.big, TEXT, (WIDTH // 2, 165))
             pygame.draw.rect(self.screen, TEXT, (380, 314, 360, 62), 2)
-            self.label('1   单人对战 AI', self.font, TEXT, (WIDTH // 2, 345))
+            self.label('1   单人对战 AI 1.5', self.font, TEXT, (WIDTH // 2, 345))
             pygame.draw.rect(self.screen, TEXT, (380, 393, 360, 62), 2)
             self.label('2   本地双人对战', self.font, TEXT, (WIDTH // 2, 424))
-            pygame.draw.rect(self.screen, TEXT, (380, 472, 360, 62), 2)
-            self.label('3   挑战 AI 1.5', self.font, TEXT, (WIDTH // 2, 503))
             self.label('P1: W A S D 移动 · 空格射击    P2: 方向键移动 · 回车射击',
                        self.small, MUTED, (WIDTH // 2, 603))
-            self.label('AI 1.5 模式每局生成随机地图', self.small, MUTED, (WIDTH // 2, 643))
+            self.label('单人模式每局生成随机地图', self.small, MUTED, (WIDTH // 2, 643))
             if self.menu_error:
                 self.label(self.menu_error, self.small, TEXT, (WIDTH // 2, 690))
         else:
@@ -449,8 +414,6 @@ class Game:
                             self.start(True)
                         elif event.key == pygame.K_2:
                             self.start(False)
-                        elif event.key == pygame.K_3:
-                            self.start(True, strong=True)
                         elif event.key == pygame.K_ESCAPE:
                             running = False
                     elif event.key == pygame.K_ESCAPE:
@@ -468,8 +431,6 @@ class Game:
                     self.start(True)
                 elif 380 <= mx <= 740 and 393 <= my <= 455:
                     self.start(False)
-                elif 380 <= mx <= 740 and 472 <= my <= 534:
-                    self.start(True, strong=True)
             self.update(dt)
             self.draw()
         pygame.quit()

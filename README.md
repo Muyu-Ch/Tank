@@ -11,7 +11,7 @@ python3 -m pip install -r requirements.txt
 python3 tank.py
 ```
 
-主菜单按 `1` 开始普通单人模式，按 `2` 开始本地双人模式，按 `3` 挑战闪避 AI。第 3 项每局生成随机迷宫和随机出生点。
+主菜单按 `1` 对战 AI 1.5，按 `2` 开始本地双人模式。单人模式每局生成随机迷宫和随机出生点。
 
 | 操作 | 玩家 1 | 玩家 2 |
 | --- | --- | --- |
@@ -27,29 +27,15 @@ python3 tank.py
 
 网络读取坦克附近最多 24 面墙的相对矩形坐标，以及最近六发炮弹的位置与速度。训练场从四周射击，包含随机墙体和反弹射击；每存活一帧获得奖励。游戏中，控制器预测双方炮弹未来约 0.6 秒的轨迹，自己的炮弹在发射 0.42 秒后也视为危险。如果多发炮弹在未来聚集并逼近，AI 会提前进入闪避，优先选择远离弹群的位置，同时避免后退撞墙。进入闪避后至少保持约 0.4 秒，危险连续消失约 0.13 秒才恢复寻敌。
 
-玩家模式当前使用 `tank_dodge_walls_best.npz`。新训练候选模型单独保存在 `tank_dodge_dense_best.npz`；它采用 96×96 神经元、3000 局训练，并加入交叉火力和近墙出生。独立评估中，新模型的贴墙时间有所下降，但存活时间略低，因此尚未替换玩家模式的模型。两个模型文件均已加入 `.gitignore`。
+项目中只保留玩家模式实际使用的 `tank_dodge_walls_best.npz`。它已加入 `.gitignore`。
 
 ## 训练与评估
 
-默认从旧模型扩展成 96×96 网络训练 3000 局；`--scratch` 可从零开始。继续训练使用 `--resume`：
+需要再次实验时，可从当前模型扩展成 96×96 网络训练 3000 局；候选结果默认写到系统临时目录，`--scratch` 可从零开始。评估和观看默认读取 AI 1.5 当前模型：
 
 ```bash
-python3 tank_dodge_walls.py --episodes 3000 --seed 44 --validation-games 40
-python3 tank_dodge_walls.py --resume --episodes 3000 --seed 45 --validation-games 40
+python3 tank_dodge_walls.py --episodes 3000 --seed 44
 python3 tank_dodge_walls.py --evaluate 200 --seed 2026 --scenario crossfire
 python3 tank_dodge_walls.py --evaluate 200 --seed 2026 --scenario corner
 python3 tank_dodge_walls.py --watch
 ```
-
-[tank_duel.py](tank_duel.py) 在随机迷宫中对战规则 AI。默认使用玩家模式的 AI 1.5；`--ai13` 使用旧版 AI 1.3；`--legacy` 使用更早的即时切换控制器；`--planner-only` 只使用旧寻敌规则。每种配置评估时使用相同的种子、地图和出生点。
-
-```bash
-python3 tank_duel.py --games 100 --seed 2026
-python3 tank_duel.py --games 100 --seed 2026 --model tank_dodge_dense_best.npz
-python3 tank_duel.py --games 100 --seed 2026 --ai13
-python3 tank_duel.py --games 100 --seed 2026 --legacy
-python3 tank_duel.py --games 100 --seed 2026 --planner-only
-python3 tank_duel.py --watch
-```
-
-`--watch` 中按 `P` 暂停、`N` 下一局、`Esc` 退出。评估输出包含胜负、自弹死亡、反弹击杀、自弹和弹群威胁触发次数、闪避接管次数和控制器切换次数。

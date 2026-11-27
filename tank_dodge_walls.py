@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import math
 import random
+import tempfile
 from collections import deque
 from pathlib import Path
 
@@ -23,8 +24,8 @@ WALL_FEATURES = 5
 FRAME_SIZE = 2 + WALL_SLOTS * WALL_FEATURES + BULLET_SLOTS * 6
 INPUT_SIZE = FRAME_SIZE * 2  # Two observations let the agent infer bullet motion.
 ACTIONS = [(forward, turn) for forward in (-1, 0, 1) for turn in (-1, 0, 1)]
-MODEL = Path(__file__).with_name('tank_dodge_dense_best.npz')
-OLD_MODEL = Path(__file__).with_name('tank_dodge_walls_best.npz')
+AI15_MODEL = Path(__file__).with_name('tank_dodge_walls_best.npz')
+CANDIDATE_MODEL = Path(tempfile.gettempdir()) / 'tank_dodge_candidate.npz'
 ARENA = pygame.Rect(32, 112, 1056, 616)
 WALL = 10
 
@@ -383,10 +384,10 @@ def train(episodes, model_path, seed, eval_interval=200, resume=False,
     random.seed(seed)
     rng = np.random.default_rng(seed)
     env = DodgeEnv(seed)
-    old = DodgeNetwork.load(OLD_MODEL) if bootstrap_old and OLD_MODEL.is_file() else None
+    old = DodgeNetwork.load(AI15_MODEL) if bootstrap_old and AI15_MODEL.is_file() else None
     online = (DodgeNetwork.load(model_path) if resume else
               DodgeNetwork.expand_from(old, rng)
-              if bootstrap_old and OLD_MODEL.is_file() else DodgeNetwork(rng))
+              if bootstrap_old and AI15_MODEL.is_file() else DodgeNetwork(rng))
     target = DodgeNetwork(rng)
     target.copy_from(online)
     replay = deque(maxlen=20000)
@@ -491,7 +492,7 @@ def watch(model_path, seed):
 def main():
     parser = argparse.ArgumentParser(description='Train or watch a pure neural dodging agent')
     parser.add_argument('--episodes', type=int, default=3000)
-    parser.add_argument('--model', type=Path, default=MODEL)
+    parser.add_argument('--model', type=Path)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--evaluate', type=int, default=0, metavar='GAMES')
     parser.add_argument('--scenario', choices=('standard', 'crossfire', 'corner',
@@ -504,14 +505,14 @@ def main():
     parser.add_argument('--validation-games', type=int, default=30)
     args = parser.parse_args()
     if args.watch:
-        watch(args.model, args.seed)
+        watch(args.model or AI15_MODEL, args.seed)
     elif args.evaluate:
-        net = DodgeNetwork.load(args.model)
+        net = DodgeNetwork.load(args.model or AI15_MODEL)
         print(evaluate(net, args.evaluate, args.seed, args.scenario))
     else:
         if args.episodes < 1:
             parser.error('--episodes must be positive')
-        train(args.episodes, args.model, args.seed,
+        train(args.episodes, args.model or CANDIDATE_MODEL, args.seed,
               resume=args.resume, validation_games=args.validation_games,
               bootstrap_old=not args.scratch)
 
