@@ -9,7 +9,7 @@ from pathlib import Path
 import pygame
 
 from tank import COLS, ROWS, Game, Maze
-from tank_ai import ACTIONS, DodgeAttackAgent, PlannerAgent, StableDodgeAttackAgent
+from tank_ai import ACTIONS, DodgeAttackAgent, PlannerAgent, StableDodgeAttackAgent, TankAI14
 from tank_dodge_walls import DodgeNetwork, MODEL
 
 PHYSICS_DT = 1 / 60
@@ -26,14 +26,15 @@ def spawn_pair(rng):
 
 class DuelEnv:
     def __init__(self, network, seed=2026, agent_index=0, legacy=False,
-                 planner_only=False):
+                 planner_only=False, ai13=False):
         self.game = Game()
         self.game.start(False)
         self.rng = random.Random(seed)
         self.agent_index = agent_index
         self.dodger = (PlannerAgent(agent_index) if planner_only else
                        DodgeAttackAgent(network, agent_index) if legacy else
-                       StableDodgeAttackAgent(network, agent_index))
+                       StableDodgeAttackAgent(network, agent_index) if ai13 else
+                       TankAI14(network, agent_index))
         self.opponent = PlannerAgent(1 - agent_index)
         self.controllers = [None, None]
         self.controllers[agent_index] = self.dodger
@@ -64,12 +65,14 @@ class DuelEnv:
         return 0, self.decisions >= MAX_DECISIONS
 
 
-def evaluate(network, games=100, seed=2026, legacy=False, planner_only=False):
+def evaluate(network, games=100, seed=2026, legacy=False, planner_only=False,
+             ai13=False):
     totals = {'win': 0, 'loss': 0, 'draw': 0, 'rebound_deaths': 0,
-              'self_hits': 0, 'dodge_decisions': 0,
+              'self_hits': 0, 'rebound_kills': 0, 'self_threats': 0,
+              'dodge_decisions': 0,
               'mode_switches': 0, 'movement_reversals': 0}
     for agent_index in (0, 1):
-        env = DuelEnv(network, seed, agent_index, legacy, planner_only)
+        env = DuelEnv(network, seed, agent_index, legacy, planner_only, ai13)
         for _ in range(games):
             env.reset()
             while True:
@@ -79,15 +82,19 @@ def evaluate(network, games=100, seed=2026, legacy=False, planner_only=False):
                     if env.last_hit and env.last_hit[0] == agent_index:
                         totals['self_hits'] += env.last_hit[1] == agent_index
                         totals['rebound_deaths'] += env.last_hit[2] > 0
+                    if env.last_hit and env.last_hit[0] != agent_index:
+                        totals['rebound_kills'] += (env.last_hit[1] == agent_index and
+                                                    env.last_hit[2] > 0)
                     for key in ('dodge_decisions', 'mode_switches', 'movement_reversals'):
                         totals[key] += getattr(env.dodger, key, 0)
+                    totals['self_threats'] += getattr(env.dodger, 'self_threats', 0)
                     break
     return totals
 
 
 def watch(network, seed=2026, agent_index=1, legacy=False,
-          planner_only=False):
-    env = DuelEnv(network, seed, agent_index, legacy, planner_only)
+          planner_only=False, ai13=False):
+    env = DuelEnv(network, seed, agent_index, legacy, planner_only, ai13)
     clock = pygame.time.Clock()
     paused = False
     while True:
@@ -119,6 +126,8 @@ def main():
                       help='Use immediate switching with the same network')
     mode.add_argument('--planner-only', action='store_true',
                       help='Use only rule-based movement and shooting')
+    mode.add_argument('--ai13', action='store_true',
+                      help='Use the previous AI 1.3 controller')
     args = parser.parse_args()
     if args.games < 1:
         parser.error('--games must be positive')
@@ -128,10 +137,10 @@ def main():
     network = None if args.planner_only else DodgeNetwork.load(args.model)
     if args.watch:
         watch(network, args.seed, int(not args.swap), args.legacy,
-              args.planner_only)
+              args.planner_only, args.ai13)
     else:
         print(evaluate(network, args.games, args.seed, args.legacy,
-                       args.planner_only))
+                       args.planner_only, args.ai13))
         pygame.quit()
 
 

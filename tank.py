@@ -259,15 +259,14 @@ class Game:
             sys.modules.setdefault('tank', sys.modules[__name__])
             try:
                 from tank_dodge_walls import MODEL, DodgeNetwork, dodge_frame
-                from tank_ai import ACTIONS, StableDodgeAttackAgent
+                from tank_ai import ACTIONS, TankAI14
                 if not MODEL.is_file():
                     raise FileNotFoundError(MODEL)
-                self.hybrid_ai = StableDodgeAttackAgent(
-                    DodgeNetwork.load(MODEL), player_index=1,
-                    frame_fn=dodge_frame, safety_filter=True)
+                self.hybrid_ai = TankAI14(DodgeNetwork.load(MODEL),
+                                          player_index=1, frame_fn=dodge_frame)
                 self.strong_actions = ACTIONS
             except (ImportError, FileNotFoundError, ValueError) as error:
-                self.menu_error = f'AI 1.3 无法启动：{error}'
+                self.menu_error = f'AI 1.4 无法启动：{error}'
                 return
         else:
             self.hybrid_ai = None
@@ -276,7 +275,7 @@ class Game:
         self.strong_ai = strong
         self.tanks = [Tank(pygame.Vector2(), 0, YELLOW, 'P1'),
                       Tank(pygame.Vector2(), math.pi, BLUE,
-                           'AI 1.3' if strong else 'AI' if solo else 'P2')]
+                           'AI 1.4' if strong else 'AI' if solo else 'P2')]
         self.new_round()
 
     def new_round(self, maze=None, left=None, right=None):
@@ -410,10 +409,10 @@ class Game:
             pygame.draw.rect(self.screen, TEXT, (380, 393, 360, 62), 2)
             self.label('2   本地双人对战', self.font, TEXT, (WIDTH // 2, 424))
             pygame.draw.rect(self.screen, TEXT, (380, 472, 360, 62), 2)
-            self.label('3   挑战 AI 1.3', self.font, TEXT, (WIDTH // 2, 503))
+            self.label('3   挑战 AI 1.4', self.font, TEXT, (WIDTH // 2, 503))
             self.label('P1: W A S D 移动 · 空格射击    P2: 方向键移动 · 回车射击',
                        self.small, MUTED, (WIDTH // 2, 603))
-            self.label('AI 1.3 模式每局生成随机地图', self.small, MUTED, (WIDTH // 2, 643))
+            self.label('AI 1.4 模式每局生成随机地图', self.small, MUTED, (WIDTH // 2, 643))
             if self.menu_error:
                 self.label(self.menu_error, self.small, TEXT, (WIDTH // 2, 690))
         else:
